@@ -498,8 +498,7 @@ def set_cpu_tdp(pl1_w:int,pl2_w:int):
 # ══════════════════════════════════════════════════════════════════════════════
 # GPU OC
 # ══════════════════════════════════════════════════════════════════════════════
-def apply_gpu_oc(core_off:int,mem_off:int,power_limit_w:int,
-                 temp_target:int=0,fan_pct:int=0):
+def apply_gpu_oc(core_off:int,mem_off:int,power_limit_w:int):
     errors=[]
     if power_limit_w>0:
         try:
@@ -517,16 +516,6 @@ def apply_gpu_oc(core_off:int,mem_off:int,power_limit_w:int,
         try:
             subprocess.Popen(["nvidia-settings","-a",
                              f"[gpu:0]/GPUMemoryTransferRateOffsetAllPerformanceLevels={mem_off}"],
-                            stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
-        except: pass
-    if temp_target>0:
-        try: subprocess.Popen(["nvidia-smi","-i","0",f"--gom={temp_target}"],
-                              stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
-        except: pass
-    if fan_pct>0:
-        try:
-            subprocess.Popen(["nvidia-settings","-a","[gpu:0]/GPUFanControlState=1",
-                             "-a",f"[fan:0]/GPUTargetFanSpeed={fan_pct}"],
                             stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
         except: pass
     msg=f"Core +{core_off} MHz | Mem +{mem_off} MHz | PL {power_limit_w}W"
