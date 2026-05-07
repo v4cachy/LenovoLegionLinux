@@ -4,28 +4,34 @@
   "http://www.freedesktop.org/standards/PolicyKit/1/policyconfig.dtd">
 <policyconfig>
 
-  <action id="legion_gui_toolkit">
-    <message gettext-domain="legion_gui_toolkit">Authentication is required to run legion_gui_toolkit</message>
-    <icon_name>legion_gui_toolkit</icon_name>
+  <action id="legion_gui_toolkit.set_tdp">
+    <description>Set CPU TDP limits</description>
+    <message>Authentication is required to set TDP power limits</message>
     <defaults>
       <allow_any>auth_admin</allow_any>
       <allow_inactive>auth_admin</allow_inactive>
       <allow_active>auth_admin</allow_active>
     </defaults>
-    <annotate key="org.freedesktop.policykit.exec.path">/usr/bin/legion_gui_toolkit</annotate>
-    <annotate key="org.freedesktop.policykit.exec.allow_gui">true</annotate>
   </action>
 
-  <action id="legion_gui_toolkit2">
-    <message gettext-domain="legion_gui_toolkit">Authentication is required to run legion_gui_toolkit</message>
-    <icon_name>legion_gui_toolkit</icon_name>
+  <action id="legion_gui_toolkit.set_fancurve">
+    <description>Write fan curve to hardware</description>
+    <message>Authentication is required to modify fan curve</message>
     <defaults>
       <allow_any>auth_admin</allow_any>
       <allow_inactive>auth_admin</allow_inactive>
       <allow_active>auth_admin</allow_active>
     </defaults>
-    <annotate key="org.freedesktop.policykit.exec.path">/usr/local/bin/legion_gui_toolkit</annotate>
-    <annotate key="org.freedesktop.policykit.exec.allow_gui">true</annotate>
+  </action>
+
+  <action id="legion_gui_toolkit.set_gpu_oc">
+    <description>Set GPU overclock/undervolt</description>
+    <message>Authentication is required to modify GPU settings</message>
+    <defaults>
+      <allow_any>auth_admin</allow_any>
+      <allow_inactive>auth_admin</allow_inactive>
+      <allow_active>auth_admin</allow_active>
+    </defaults>
   </action>
 
 </policyconfig>
