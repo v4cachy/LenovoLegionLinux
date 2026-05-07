@@ -4319,11 +4319,209 @@ class DisplayPage(QWidget):
 class SystemPage(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
-        layout = QVBoxLayout(self)
-        lbl = QLabel("SystemPage")
-        lbl.setStyleSheet("color:#888;font-size:16px;")
-        lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        layout.addWidget(lbl)
+        self.setStyleSheet(f"background:{C_BG};")
+        self._app_cfg = load_app_config()
+        self._build()
+
+    def _build(self):
+        scroll = QScrollArea(self); scroll.setWidgetResizable(True)
+        scroll.setStyleSheet("border:none;background:transparent;")
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        inner = QWidget(); inner.setStyleSheet(f"background:{C_BG};")
+        root = QVBoxLayout(inner); root.setContentsMargins(24,24,24,24); root.setSpacing(12)
+        lay = QVBoxLayout(self); lay.setContentsMargins(0,0,0,0); lay.addWidget(scroll)
+        scroll.setWidget(inner)
+
+        # Input devices
+        ic, il = make_card("Input Devices")
+        input_rows = [
+            ("Fn Lock",   "Swap Fn and media keys so F1–F12 work as standard keys.",
+             FN_LOCK,   "Fn Lock ON — F1-F12 as function keys",  "Fn Lock OFF — media keys"),
+            ("Super Key", "Enable or disable the Windows/Super key.",
+             WINKEY,   "Super Key Enabled",  "Super Key Disabled"),
+            ("Touchpad",  "Enable or disable the built-in touchpad.",
+             TOUCHPAD, "Touchpad Enabled",   "Touchpad Disabled"),
+            ("Camera",    "Hardware kill switch for the built-in webcam.",
+             CAMERA_POWER,"Camera Enabled",  "Camera Disabled 🔒"),
+        ]
+        for i, (title, desc, path, notif_on, notif_off) in enumerate(input_rows):
+            il.addWidget(NotifyToggle(title, desc, path,
+                                      notif_title=title,
+                                      notif_on=notif_on, notif_off=notif_off))
+            if i < len(input_rows)-1: il.addWidget(make_div())
+        root.addWidget(ic)
+
+        # ── TrackPoint (ThinkPad only) ────────────────────────────────────────
+        if HW.get("tp_trackpoint"):
+            tp_c, tp_l = make_card("🔴  TrackPoint")
+            tp_l.addWidget(_mk_lbl(
+                "Adjust the red TrackPoint pointing stick sensitivity and speed.",
+                C_TEXT2, size=12))
+            tp_l.addWidget(make_div())
+
+            def _tp_serio_path(attr: str) -> "Path | None":
+                try:
+                    for d in Path("/sys/bus/serio/devices").iterdir():
+                        p = d / attr
+                        if p.exists(): return p
+                except: pass
+                return None
+
+            def _tp_slider(label, attr, lo, hi, color):
+                path = _tp_serio_path(attr)
+                row = QHBoxLayout(); row.setSpacing(12)
+                lb = QLabel(label); lb.setFixedWidth(100)
+                lb.setStyleSheet(f"color:{C_TEXT};font-size:12px;background:transparent;")
+                sl = QSlider(Qt.Orientation.Horizontal)
+                sl.setRange(lo, hi)
+                try: sl.setValue(int(path.read_text().strip())) if path else sl.setValue((lo+hi)//2)
+                except: sl.setValue((lo+hi)//2)
+                sl.setStyleSheet(
+                    f"QSlider::groove:horizontal{{background:{C_BORDER};height:6px;border-radius:3px;}}"
+                    f"QSlider::handle:horizontal{{background:{color};width:16px;height:16px;border-radius:8px;margin:-5px 0;}}"
+                    f"QSlider::sub-page:horizontal{{background:{color};border-radius:3px;}}"
+                )
+                vl = QLabel(str(sl.value())); vl.setFixedWidth(30)
+                vl.setStyleSheet(f"color:{color};font-size:12px;font-weight:600;background:transparent;")
+                sl.valueChanged.connect(lambda v, l=vl, p=path: (l.setText(str(v)),
+                    _tp_serio_path(attr) and _tp_serio_path(attr).write_text(str(v))))
+                row.addWidget(lb); row.addWidget(sl); row.addWidget(vl)
+                return row
+
+            tp_l.addLayout(_tp_slider("Sensitivity", "sensitivity", 1, 255, C_RED))
+            tp_l.addLayout(_tp_slider("Speed",       "speed",       1, 255, C_ORANGE))
+            root.addWidget(tp_c)
+
+        # ── Yoga auto-rotate ──────────────────────────────────────────────────
+        if HW.get("yoga_hinge") or HW.get("als_sensor"):
+            yr_c, yr_l = make_card("🔄  Yoga — Auto Rotate")
+            yr_l.addWidget(_mk_lbl(
+                "Lock or unlock automatic screen rotation based on hinge/accelerometer.",
+                C_TEXT2, size=11))
+            yr_l.addWidget(make_div())
+
+            rot_row = QHBoxLayout(); rot_row.setSpacing(16)
+            rot_text = QVBoxLayout(); rot_text.setSpacing(2)
+            rot_t = QLabel("Orientation Lock")
+            rot_t.setStyleSheet(f"color:{C_TEXT};font-size:13px;font-weight:600;background:transparent;")
+            rot_d = QLabel("When ON, rotation is locked to current orientation.")
+            rot_d.setStyleSheet(f"color:{C_TEXT2};font-size:12px;background:transparent;")
+            rot_text.addWidget(rot_t); rot_text.addWidget(rot_d)
+            rot_row.addLayout(rot_text, 1)
+
+            self._rot_lock_tog = ToggleSwitch(path=None, on_change=self._on_rot_lock, read_val="0")
+            rot_row.addWidget(self._rot_lock_tog, 0, Qt.AlignmentFlag.AlignVCenter)
+            yr_l.addLayout(rot_row)
+            self._rot_status = QLabel("")
+            self._rot_status.setStyleSheet(f"color:{C_GREEN};font-size:12px;background:transparent;")
+            yr_l.addWidget(self._rot_status)
+            root.addWidget(yr_c)
+
+        # Appearance — Theme
+        ac, al = make_card("Appearance")
+        th_row = QHBoxLayout(); th_row.setSpacing(12)
+        th_lbl = QLabel("Theme")
+        th_lbl.setStyleSheet(f"color:{C_TEXT};font-size:13px;font-weight:500;background:transparent;")
+        th_row.addWidget(th_lbl)
+        self.theme_combo = QComboBox()
+        self.theme_combo.setStyleSheet(combo_style())
+        self.theme_combo.setFixedHeight(36)
+        self.theme_combo.addItems(["Dark", "Dark Dimmed", "OLED Black", "Light"])
+        saved_theme = self._app_cfg.get("theme", "dark")
+        theme_idx = {"dark": 0, "dark_dimmed": 1, "oled_black": 2, "light": 3}.get(saved_theme, 0)
+        self.theme_combo.setCurrentIndex(theme_idx)
+        self.theme_combo.currentIndexChanged.connect(self._on_theme)
+        th_row.addWidget(self.theme_combo); th_row.addStretch()
+        al.addLayout(th_row)
+        th_desc = QLabel("Changes the application theme. Applied immediately.")
+        th_desc.setStyleSheet(f"color:{C_TEXT2};font-size:12px;background:transparent;")
+        al.addWidget(th_desc)
+        self._app_status = QLabel("")
+        self._app_status.setStyleSheet(f"color:{C_GREEN};font-size:12px;background:transparent;")
+        al.addWidget(self._app_status)
+        root.addWidget(ac)
+
+        # ── Yoga hinge mode (only on Yoga devices) ────────────────────────────
+        if HW.get("yoga_hinge"):
+            yc, yl = make_card("🔄  Yoga Mode")
+            yl.addWidget(_mk_lbl(
+                "Your device supports automatic mode switching based on hinge angle.",
+                C_TEXT2, size=11))
+            yl.addWidget(make_div())
+            def _get_yoga_mode() -> str:
+                try:
+                    p = next(Path("/sys/bus/platform/drivers/lenovo-ymc").glob("*/yoga_mode"), None)
+                    if p: return p.read_text().strip()
+                except: pass
+                return "—"
+            self._yoga_mode_lbl = QLabel(f"Current mode: {_get_yoga_mode()}")
+            self._yoga_mode_lbl.setStyleSheet(f"color:{C_BLUE};font-size:13px;font-weight:600;background:transparent;")
+            yl.addWidget(self._yoga_mode_lbl)
+            yoga_ref = QPushButton("🔄  Refresh Mode")
+            yoga_ref.setFixedHeight(30)
+            yoga_ref.setStyleSheet(f"background:{C_CARD2};color:{C_TEXT};border:1px solid {C_BORDER};border-radius:6px;font-size:12px;")
+            yoga_ref.clicked.connect(lambda: self._yoga_mode_lbl.setText(f"Current mode: {_get_yoga_mode()}"))
+            yl.addWidget(yoga_ref)
+            root.addWidget(yc)
+
+        # ── ThinkPad keyboard extras ──────────────────────────────────────────
+        if HW.get("tp_thinklight") or HW.get("tp_micmute_led"):
+            tpk_c, tpk_l = make_card("⌨️  ThinkPad Extras")
+            if HW.get("tp_thinklight"):
+                tpk_l.addWidget(NotifyToggle(
+                    "ThinkLight", "Keyboard light above the screen.",
+                    Path("/sys/class/leds/tpacpi::thinklight/brightness"),
+                    notif_title="ThinkLight"))
+                tpk_l.addWidget(make_div())
+            if HW.get("tp_micmute_led"):
+                tpk_l.addWidget(NotifyToggle(
+                    "Mic Mute LED", "Sync the mic mute LED with system mute state.",
+                    Path("/sys/class/leds/platform::micmute/brightness"),
+                    notif_title="Mic Mute LED"))
+            root.addWidget(tpk_c)
+
+        root.addStretch()
+
+    def _on_rot_lock(self, locked: bool):
+        """Toggle screen orientation lock via iio-sensor-proxy / monitor-sensor."""
+        def _do():
+            try:
+                if locked:
+                    subprocess.Popen(["gdbus", "call", "--session",
+                        "--dest", "net.hadess.SensorProxy",
+                        "--object-path", "/net/hadess/SensorProxy",
+                        "--method", "net.hadess.SensorProxy.ClaimAccelerometer"],
+                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                    self._rot_status.setText("✓  Rotation locked")
+                else:
+                    subprocess.Popen(["gdbus", "call", "--session",
+                        "--dest", "net.hadess.SensorProxy",
+                        "--object-path", "/net/hadess/SensorProxy",
+                        "--method", "net.hadess.SensorProxy.ReleaseAccelerometer"],
+                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                    self._rot_status.setText("✓  Auto-rotate enabled")
+            except Exception as e:
+                self._rot_status.setText(f"✗  {e}")
+        threading.Thread(target=_do, daemon=True).start()
+
+    def _on_theme(self, idx):
+        """Save theme and restart dashboard so all colours rebuild correctly."""
+        names = ["dark", "dark_dimmed", "oled_black", "light"]
+        name = names[idx] if idx < len(names) else "dark"
+        self._app_cfg["theme"] = name
+        save_app_config(self._app_cfg)
+        self._app_status.setText("✓ Restarting to apply theme…")
+        QTimer.singleShot(500, self._restart)
+
+    def _restart(self):
+        """Restart the GUI so all colours rebuild from the saved theme."""
+        import os
+        win = self.window()
+        if win: win.close()
+        os.execv(sys.executable, [sys.executable] + sys.argv)
+
+    def refresh(self, d=None): pass
+
 # ══════════════════════════════════════════════════════════════════════════════
 # OVERCLOCK PAGE
 # ══════════════════════════════════════════════════════════════════════════════
@@ -5030,13 +5228,10 @@ class FanPage(QWidget):
 
 # ══════════════════════════════════════════════════════════════════════════════
 class ActionsPage(QWidget):
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        layout = QVBoxLayout(self)
-        lbl = QLabel("ActionsPage")
-        lbl.setStyleSheet("color:#888;font-size:16px;")
-        lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        layout.addWidget(lbl)
+
+    def refresh(self, d=None):
+        self._refresh_rpm()
+
 # ══════════════════════════════════════════════════════════════════════════════
         color = C_GREEN if ok else C_ORANGE
         self._status.setStyleSheet(
@@ -5430,11 +5625,120 @@ class ActionsPage(QWidget):
 class AboutPage(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
-        layout = QVBoxLayout(self)
-        lbl = QLabel("AboutPage")
-        lbl.setStyleSheet("color:#888;font-size:16px;")
-        lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        layout.addWidget(lbl)
+        self.setStyleSheet(f"background:{C_BG};")
+        self._build()
+
+    def _build(self):
+        root = QVBoxLayout(self); root.setContentsMargins(24,24,24,24); root.setSpacing(12)
+        card, lay = make_card()
+
+        # Header section with logo and title
+        header_w = QWidget()
+        header_w.setStyleSheet("background:transparent;")
+        header_l = QVBoxLayout(header_w)
+        header_l.setContentsMargins(0,0,0,8)
+        header_l.setSpacing(8)
+        header_l.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
+        from PyQt6.QtGui import QPixmap as _QP
+        import base64 as _b64
+        pm = _QP(); pm.loadFromData(_b64.b64decode(_LEGION_ICON_B64))
+        logo = QLabel(); logo.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        logo.setPixmap(pm.scaled(64, 78, Qt.AspectRatioMode.KeepAspectRatio,
+                                 Qt.TransformationMode.SmoothTransformation))
+        logo.setStyleSheet("background:transparent;")
+        header_l.addWidget(logo)
+
+        title = QLabel("Legion Linux Toolkit")
+        title.setStyleSheet(f"color:{C_TEXT};font-size:22px;font-weight:700;background:transparent;")
+        title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        header_l.addWidget(title)
+
+        ver = QLabel("v0.6.3 · BETA 20260504")
+        ver.setStyleSheet(f"color:{C_TEXT2};font-size:12px;font-weight:500;background:transparent;")
+        ver.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        header_l.addWidget(ver)
+
+        lay.addWidget(header_w)
+
+        # Read system info dynamically
+        brand = HW.get("brand", "unknown").upper() if HW else _dmi("product_family").upper() or "LENOVO"
+        model = HW.get("model", _dmi("product_name")) if HW else _dmi("product_name") or "Unknown"
+
+        cpu_name = "Unknown"
+        try:
+            for line in Path("/proc/cpuinfo").read_text().splitlines():
+                if "model name" in line.lower():
+                    cpu_name = line.split(":")[1].strip()
+                    break
+        except: pass
+
+        gpu_name = "Unknown"
+        try:
+            r = subprocess.run(["lspci"], capture_output=True, text=True, timeout=3)
+            gpus = []
+            for line in r.stdout.splitlines():
+                if any(k in line for k in ["VGA","3D","Display"]):
+                    g = line.split(":",2)[-1].strip()
+                    if len(g) > 55: g = g[:55] + "…"
+                    gpus.append(g)
+            gpu_name = " + ".join(gpus) if gpus else "Unknown"
+        except: pass
+
+        os_name = "Linux"
+        try:
+            for line in Path("/etc/os-release").read_text().splitlines():
+                if line.startswith("PRETTY_NAME="):
+                    os_name = line.split("=",1)[1].strip().strip('"')
+                    break
+        except: pass
+
+        desktop = os.environ.get("XDG_CURRENT_DESKTOP", "") or \
+                  os.environ.get("DESKTOP_SESSION", "Unknown")
+        wayland = "Wayland" if os.environ.get("WAYLAND_DISPLAY") else "X11"
+        desktop_str = f"{desktop} ({wayland})" if desktop else wayland
+
+        drivers = []
+        try:
+            mods = subprocess.run(["lsmod"], capture_output=True, text=True, timeout=3).stdout
+            if "ideapad_acpi" in mods:  drivers.append("ideapad_acpi")
+            if "legion_laptop" in mods: drivers.append("legion_laptop")
+            if "thinkpad_acpi" in mods: drivers.append("thinkpad_acpi")
+        except: pass
+        driver_str = " + ".join(drivers) if drivers else "ideapad_acpi"
+
+        info_rows = [
+            ("Brand",   brand),
+            ("Model",   model),
+            ("CPU",     cpu_name),
+            ("GPU",     gpu_name),
+            ("OS",      os_name),
+            ("Desktop", desktop_str),
+            ("Driver",  driver_str),
+            ("Config",  "~/.config/legion-toolkit/"),
+            ("GitHub",  "github.com/v4cachy/legion-linux-toolkit"),
+        ]
+        for label, value in info_rows:
+            row = QWidget()
+            row.setStyleSheet("background:transparent;")
+            row.setFixedHeight(32)
+            rl = QHBoxLayout(row)
+            rl.setContentsMargins(0, 2, 0, 2)
+            rl.setSpacing(16)
+            lbl = QLabel(label)
+            lbl.setStyleSheet(f"color:{C_TEXT2};font-size:12px;font-weight:500;background:transparent;")
+            lbl.setFixedWidth(80)
+            val = QLabel(value)
+            val.setStyleSheet(f"color:{C_TEXT};font-size:12px;font-weight:500;background:transparent;")
+            val.setWordWrap(True)
+            rl.addWidget(lbl)
+            rl.addWidget(val, 1)
+            lay.addWidget(row)
+
+        root.addWidget(card); root.addStretch()
+
+    def refresh(self, d=None): pass
+
 # ══════════════════════════════════════════════════════════════════════════════
 # MAIN WINDOW
 # ══════════════════════════════════════════════════════════════════════════════
@@ -5522,8 +5826,8 @@ class LegionDashboard(QMainWindow):
         # Nav buttons
         self.nav_btns = []
         nav = [("🏠","Home"),("🔋","Battery"),("⚡","Performance"),
-               ("🖥️","Display"),("⌨️","Keyboard"),("⚙️","System"),
-               ("🚀","Overclock"),("🌀","Fan Control"),("🎯","Actions"),("ℹ️","About")]
+               ("🖥️","Display"),("⚙️","System"),
+               ("🚀","Power Options"),("🌀","Fan Control"),("🎯","Actions"),("ℹ️","About")]
         nav_area = QWidget()
         nav_area.setStyleSheet(f"background:{C_SIDEBAR};")
         nav_area_lay = QVBoxLayout(nav_area)
@@ -5575,8 +5879,8 @@ class LegionDashboard(QMainWindow):
         self.home_page._page_request_cb = self._switch
         self.pages = [
             self.home_page, BatteryPage(), PerformancePage(),
-            DisplayPage(), KeyboardPage(), SystemPage(),
-            OverclockPage(), FanPage(), ActionsPage(), AboutPage()
+            DisplayPage(), SystemPage(),
+            PowerOptionsPage(), FanPage(), ActionsPage(), AboutPage()
         ]
         self.home_page._sync_battery_cb = self.pages[1].sync_charging
         self.pages[1]._sync_home_cb = self._sync_bat_combo
@@ -5618,14 +5922,7 @@ class LegionDashboard(QMainWindow):
     @pyqtSlot()
     def _on_fnspace(self):
         """Called on main thread when Fn+Space is detected."""
-        # Cycle the keyboard effect
-        kb_page = self.pages[4]   # KeyboardPage is index 4
-        if hasattr(kb_page, "cycle_effect"):
-            kb_page.cycle_effect()
-        # If keyboard page is not visible, show a brief notification
-        if self.stack.currentIndex() != 4:
-            cur = getattr(kb_page, "_current_effect", "Static")
-            send_notif("Keyboard RGB", f"Effect → {cur}", "input-keyboard")
+        # Keyboard effect cycling removed — no keyboard tab
 
     def _sync_bat_combo(self, idx: int):
         """Sync Home page battery combo when Battery page toggle changes."""
@@ -5635,8 +5932,8 @@ class LegionDashboard(QMainWindow):
 
     def _switch(self, idx):
         self.stack.setCurrentIndex(idx)
-        titles = ["Home","Battery","Performance","Display","Keyboard",
-                  "System","Overclock","Fan","Actions","About"]
+        titles = ["Home","Battery","Performance","Display",
+                  "System","Power Options","Fan","Actions","About"]
         self.page_title.setText(titles[idx])
         for i, btn in enumerate(self.nav_btns):
             btn.setChecked(i == idx); btn.update()
@@ -5666,10 +5963,10 @@ class LegionDashboard(QMainWindow):
             self.pages[2].refresh(d)
         elif idx == 3:  # DisplayPage — VRR status
             self.pages[3].refresh(d)
-        elif idx == 7:  # FanPage — live RPM
+        elif idx == 6:  # FanPage — live RPM
+            self.pages[6].refresh(d)
+        elif idx == 7:  # ActionsPage — power source status
             self.pages[7].refresh(d)
-        elif idx == 8:  # ActionsPage — power source status
-            self.pages[8].refresh(d)
 
     def _tick(self):
         """Light 2s timer for pages that need periodic refresh but not sampler data."""
@@ -5678,8 +5975,8 @@ class LegionDashboard(QMainWindow):
         if idx == 1:
             self.pages[1].refresh()
         # Actions page — AC poll
-        elif idx == 8:
-            self.pages[8].refresh()
+        elif idx == 7:
+            self.pages[7].refresh()
 
     def closeEvent(self, e):
         global _sampler
