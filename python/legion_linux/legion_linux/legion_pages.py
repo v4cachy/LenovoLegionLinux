@@ -959,7 +959,11 @@ class FanPage(QWidget):
             c=C_RED if rpm>5000 else C_ORANGE if rpm>2500 else col
             lbl.setStyleSheet(f"color:{c};font-size:22px;font-weight:600;background:transparent;")
 
-    def refresh(self,d=None): self._refresh_rpm()
+    def refresh(self,d=None):
+        self._refresh_rpm()
+        if d:
+            profile=d.get("profile","")
+            self._full_btn.setVisible(profile=="custom")
 
 # ══════════════════════════════════════════════════════════════════════════════
 # ACTIONS PAGE
