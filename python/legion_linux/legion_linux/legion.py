@@ -493,9 +493,6 @@ class AlwaysOnUSBChargingFeature(BoolFileFeature):
     def __init__(self):
         super().__init__(os.path.join(IDEAPAD_SYS_BASEPATH, 'usb_charging'))
 
-    def set(self, value: str):
-        raise NotImplementedError()
-
 
 class MaximumFanSpeedFeature(BoolFileFeature):
     def __init__(self):
