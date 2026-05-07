@@ -3960,23 +3960,362 @@ class PerformancePage(QWidget):
 class DisplayPage(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
-        layout = QVBoxLayout(self)
-        lbl = QLabel("DisplayPage")
-        lbl.setStyleSheet("color:#888;font-size:16px;")
-        lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        layout.addWidget(lbl)
-# ══════════════════════════════════════════════════════════════════════════════
+        self.setStyleSheet(f"background:{C_BG};")
+        self._outputs = []
+        self._build()
+
+    def _build(self):
+        scroll = QScrollArea(self); scroll.setWidgetResizable(True)
+        scroll.setStyleSheet("border:none;background:transparent;")
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        inner = QWidget(); inner.setStyleSheet(f"background:{C_BG};")
+        root = QVBoxLayout(inner); root.setContentsMargins(24,24,24,24); root.setSpacing(12)
+        lay = QVBoxLayout(self); lay.setContentsMargins(0,0,0,0); lay.addWidget(scroll)
+        scroll.setWidget(inner)
+
+        # ── Screen Brightness ─────────────────────────────────────────────────
+        bc, bl = make_card("Screen Brightness")
+        bl.addWidget(_mk_lbl(
+            "Display backlight brightness via sysfs.", C_TEXT2, size=12))
+
+        # Detect backlight path — scan known paths + all available
+        _bl_paths = [
+            Path("/sys/class/backlight/nvidia_wmi_ec_backlight"),
+            Path("/sys/class/backlight/amdgpu_bl0"),
+            Path("/sys/class/backlight/amdgpu_bl1"),
+            Path("/sys/class/backlight/acpi_video0"),
+        ]
+        # Also scan dynamically
+        try:
+            for p in Path("/sys/class/backlight").iterdir():
+                if p not in _bl_paths: _bl_paths.append(p)
+        except Exception: pass
+        self._bl_path = next((p for p in _bl_paths if (p/"brightness").exists()), None)
+
+        if self._bl_path:
+            try:
+                _max_bl = int((self._bl_path/"max_brightness").read_text().strip())
+                _cur_bl = int((self._bl_path/"brightness").read_text().strip())
+            except Exception:
+                _max_bl = 255; _cur_bl = 128
+
+            # Read actual hardware minimum — nvidia_wmi_ec_backlight supports 0
+            try:
+                _min_bl = int((self._bl_path/"min_brightness").read_text().strip())
+            except:
+                _min_bl = 0   # default to 0, allow full dim
+
+            bl.addWidget(_mk_lbl(
+                f"Path: {self._bl_path}/brightness  ·  Max: {_max_bl}", C_TEXT3, size=11))
+
+            bri_row = QHBoxLayout(); bri_row.setSpacing(12)
+            dim_lbl = QLabel("0%")
+            dim_lbl.setFixedWidth(32)
+            dim_lbl.setStyleSheet(f"color:{C_TEXT3};font-size:12px;background:transparent;")
+            bri_row.addWidget(dim_lbl)
+
+            self._screen_sl = QSlider(Qt.Orientation.Horizontal)
+            self._screen_sl.setRange(_min_bl, _max_bl)  # use hardware min — allows 0
+            self._screen_sl.setValue(_cur_bl)
+            self._screen_sl.setStyleSheet(
+                f"QSlider::groove:horizontal{{background:{C_BORDER};height:8px;border-radius:4px;}}"
+                f"QSlider::handle:horizontal{{background:{C_BLUE};width:20px;height:20px;"
+                f"border-radius:10px;margin:-6px 0;}}"
+                f"QSlider::sub-page:horizontal{{background:{C_BLUE};border-radius:4px;}}"
+            )
+            bri_row.addWidget(self._screen_sl)
+
+            max_lbl = QLabel("100%")
+            max_lbl.setFixedWidth(36)
+            max_lbl.setStyleSheet(f"color:{C_TEXT3};font-size:12px;background:transparent;")
+            bri_row.addWidget(max_lbl)
+
+            # Percentage label
+            self._bri_pct_lbl = QLabel(f"{int(_cur_bl/_max_bl*100)}%")
+            self._bri_pct_lbl.setFixedWidth(42)
+            self._bri_pct_lbl.setStyleSheet(
+                f"color:{C_BLUE};font-size:13px;font-weight:600;background:transparent;")
+            bri_row.addWidget(self._bri_pct_lbl)
+            bl.addLayout(bri_row)
+
+            # Connect: live update on drag, write on release
+            self._bl_max = _max_bl
+            self._screen_sl.valueChanged.connect(self._on_bri_change)
+            self._screen_sl.sliderReleased.connect(self._write_brightness)
+        else:
+            bl.addWidget(_mk_lbl(
+                "⚠  No backlight device found.\n"
+                "Is the amdgpu driver loaded? Try: sudo modprobe amdgpu", C_ORANGE, size=11))
+        root.addWidget(bc)
+
+        # ── Display toggles ───────────────────────────────────────────────────
+        dc, dl = make_card("Display Settings")
+        dl.addWidget(NotifyToggle("Display Overdrive",
+                                  "Reduce display response time. May introduce minor artefacts.",
+                                  OVERDRIVE, notif_title="Display Overdrive"))
+        dl.addWidget(make_div())
+
+        # G-Sync — via Legion sysfs node
+        _gsync_nt = NotifyToggle(
+            "G-Sync",
+            "NVIDIA G-Sync variable refresh rate. Enable for smoother gaming.",
+            GSYNC,
+            notif_title="G-Sync")
+        dl.addWidget(_gsync_nt)
+
+        # Brightness Backlight
+        if NVIDIA_BACKLIGHT.exists():
+            def _is_bl_on():
+                try: return int(NVIDIA_BACKLIGHT.read_text().strip()) > 0
+                except: return False
+            _bl_nt = NotifyToggle(
+                "Brightness Backlight",
+                "Control display backlight via nvidia_wmi_ec_backlight.",
+                NVIDIA_BACKLIGHT,
+                notif_title="Brightness Backlight",
+                read_val=lambda: "1" if _is_bl_on() else "0")
+            dl.addWidget(_bl_nt)
+        root.addWidget(dc)
+
+        # ── Resolution ────────────────────────────────────────────────────────
+        resc, resl = make_card("Resolution")
+        res_desc = QLabel("Change the display resolution. Takes effect immediately via kscreen.")
+        res_desc.setStyleSheet(f"color:{C_TEXT2};font-size:12px;background:transparent;")
+        resl.addWidget(res_desc)
+
+        out_row = QHBoxLayout(); out_row.setSpacing(12)
+        out_lbl = QLabel("Output:")
+        out_lbl.setStyleSheet(f"color:{C_TEXT};font-size:12px;background:transparent;")
+        self.out_combo = QComboBox(); self.out_combo.setStyleSheet(combo_style())
+        self.out_combo.currentIndexChanged.connect(self._on_output_change)
+        out_row.addWidget(out_lbl); out_row.addWidget(self.out_combo); out_row.addStretch()
+        resl.addLayout(out_row)
+
+        res_row = QHBoxLayout(); res_row.setSpacing(12)
+        res_lbl = QLabel("Resolution:")
+        res_lbl.setStyleSheet(f"color:{C_TEXT};font-size:12px;background:transparent;")
+        self.res_combo = QComboBox(); self.res_combo.setStyleSheet(combo_style())
+        self.res_combo.currentIndexChanged.connect(self._on_res_change)
+        res_row.addWidget(res_lbl); res_row.addWidget(self.res_combo); res_row.addStretch()
+        resl.addLayout(res_row)
+
+        self.res_current = InfoRow("Current", "—"); resl.addWidget(self.res_current)
+
+        apply_res_btn = QPushButton("Apply Resolution")
+        apply_res_btn.setFixedHeight(32)
+        apply_res_btn.setStyleSheet(
+            f"background:{C_ACCENT};color:#fff;border-radius:6px;"
+            f"font-size:12px;border:none;padding:0 16px;")
+        apply_res_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        apply_res_btn.clicked.connect(self._apply_resolution)
+        res_btn_row = QHBoxLayout()
+        res_btn_row.addWidget(apply_res_btn); res_btn_row.addStretch()
+        resl.addLayout(res_btn_row)
+
+        self.res_note = QLabel("kscreen-doctor not found. Install: sudo pacman -S kscreen")
+        self.res_note.setStyleSheet(f"color:{C_ORANGE};font-size:12px;background:transparent;")
+        resl.addWidget(self.res_note)
+        root.addWidget(resc)
+
+        # ── Refresh Rate ──────────────────────────────────────────────────────
+        rrc, rrl = make_card("Refresh Rate")
+        rr_desc = QLabel("Set the display refresh rate for the current resolution.")
+        rr_desc.setStyleSheet(f"color:{C_TEXT2};font-size:12px;background:transparent;")
+        rrl.addWidget(rr_desc)
+
+        hz_row = QHBoxLayout(); hz_row.setSpacing(12)
+        hz_lbl = QLabel("Refresh Rate:")
+        hz_lbl.setStyleSheet(f"color:{C_TEXT};font-size:12px;background:transparent;")
+        self.hz_combo = QComboBox(); self.hz_combo.setStyleSheet(combo_style())
+        hz_row.addWidget(hz_lbl); hz_row.addWidget(self.hz_combo); hz_row.addStretch()
+        rrl.addLayout(hz_row)
+
+        self.hz_current = InfoRow("Current", "—"); rrl.addWidget(self.hz_current)
+
+        apply_hz_btn = QPushButton("Apply Refresh Rate")
+        apply_hz_btn.setFixedHeight(32)
+        apply_hz_btn.setStyleSheet(
+            f"background:{C_ACCENT};color:#fff;border-radius:6px;"
+            f"font-size:12px;border:none;padding:0 16px;")
+        apply_hz_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        apply_hz_btn.clicked.connect(self._apply_rate)
+        hz_btn_row = QHBoxLayout()
+        hz_btn_row.addWidget(apply_hz_btn); hz_btn_row.addStretch()
+        rrl.addLayout(hz_btn_row)
+        root.addWidget(rrc)
+
+        root.addStretch()
+        self._refresh_outputs()
+
+    def _on_bri_change(self, val: int):
+        """Live label update while dragging — no sysfs write yet."""
+        pct = int(val / self._bl_max * 100)
+        self._bri_pct_lbl.setText(f"{pct}%")
+
+    def _write_brightness(self):
+        """Write brightness on slider release — via sysfs direct or pkexec."""
+        if not self._bl_path: return
+        val = self._screen_sl.value()
+        bri_file = self._bl_path / "brightness"
+        try:
+            bri_file.write_text(str(val) + "\n")
+        except PermissionError:
+            subprocess.Popen(
+                ["pkexec","sh","-c",f"echo {val} > {bri_file}"],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+            )
+        except Exception: pass
+
+    def _refresh_outputs(self):
+        self._outputs = get_display_outputs()
+        self.out_combo.blockSignals(True)
+        self.out_combo.clear()
+        if self._outputs:
+            self.res_note.hide()
+            self.out_combo.show()
+            for name, cur_mode, modes in self._outputs:
+                self.out_combo.addItem(name)
+        else:
+            self.res_note.show()
+        self.out_combo.blockSignals(False)
+        self._on_output_change(0)
+
+    def _on_output_change(self, idx):
+        """Populate resolution combo from unique WxH values for selected output."""
+        self.res_combo.blockSignals(True)
+        self.res_combo.clear()
+        self._cur_output_modes = []   # list of (mode_str, is_cur)
+
+        if 0 <= idx < len(self._outputs):
+            name, cur_mode, modes = self._outputs[idx]
+            self._cur_output_modes = modes
+
+            # Collect unique resolutions preserving order
+            seen_res = {}
+            for mode_str, is_cur in modes:
+                res = mode_str.split("@")[0]   # "1920x1080"
+                if res not in seen_res:
+                    seen_res[res] = is_cur
+                elif is_cur:
+                    seen_res[res] = True
+
+            for res, is_cur in seen_res.items():
+                label = ("● " if is_cur else "  ") + res
+                self.res_combo.addItem(label, res)
+                if is_cur:
+                    self.res_combo.setCurrentIndex(self.res_combo.count()-1)
+
+            if cur_mode:
+                res_part = cur_mode.split("@")[0]
+                hz_part  = cur_mode.split("@")[1] if "@" in cur_mode else "?"
+                self.res_current.set_value(f"{res_part}  ({hz_part} Hz active)")
+                self.hz_current.set_value(f"{hz_part} Hz")
+
+        self.res_combo.blockSignals(False)
+        self._on_res_change(self.res_combo.currentIndex())
+
+    def _on_res_change(self, idx):
+        """Populate refresh rate combo for selected resolution."""
+        self.hz_combo.blockSignals(True)
+        self.hz_combo.clear()
+        selected_res = self.res_combo.itemData(idx) if idx >= 0 else None
+        if selected_res and self._cur_output_modes:
+            for mode_str, is_cur in self._cur_output_modes:
+                res = mode_str.split("@")[0]
+                if res == selected_res:
+                    hz = mode_str.split("@")[1] if "@" in mode_str else "?"
+                    label = ("● " if is_cur else "  ") + hz + " Hz"
+                    self.hz_combo.addItem(label, mode_str)
+                    if is_cur:
+                        self.hz_combo.setCurrentIndex(self.hz_combo.count()-1)
+        self.hz_combo.blockSignals(False)
+
+    def _apply_resolution(self):
+        """Apply selected resolution at its highest available refresh rate."""
+        out_idx = self.out_combo.currentIndex()
+        res_data = self.res_combo.currentData()
+        if out_idx < 0 or not res_data or not self._outputs: return
+        out_name = self._outputs[out_idx][0]
+        # Find highest Hz mode for this resolution
+        best_mode = None
+        best_hz = 0
+        for mode_str, _ in self._cur_output_modes:
+            if mode_str.split("@")[0] == res_data:
+                try:
+                    hz = int(mode_str.split("@")[1])
+                    if hz > best_hz:
+                        best_hz = hz; best_mode = mode_str
+                except: pass
+        if best_mode:
+            set_refresh_rate(out_name, best_mode)
+            QTimer.singleShot(1500, self._refresh_outputs)
+
+    def _apply_rate(self):
+        """Apply selected refresh rate."""
+        out_idx  = self.out_combo.currentIndex()
+        mode_str = self.hz_combo.currentData()
+        if out_idx < 0 or not mode_str or not self._outputs: return
+        out_name = self._outputs[out_idx][0]
+        set_refresh_rate(out_name, mode_str)
+        QTimer.singleShot(1500, self._refresh_outputs)
+
+    def _apply_vrr(self):
+        """Apply VRR/FreeSync policy via kscreen-doctor + persist to kscreen config."""
+        # combo: 0=Never 1=Automatic 2=Always → kscreen: 0=never 1=automatic 2=always
+        _idx_to_ks    = {0: 0, 1: 1, 2: 2}
+        _idx_to_str   = {0: "never", 1: "automatic", 2: "always"}
+        _idx_to_label = {0: "Never", 1: "Automatic", 2: "Always"}
+        idx    = self._vrr_combo.currentIndex()
+        policy = _idx_to_ks.get(idx, 0)
+        policy_str = _idx_to_str.get(idx, "never")
+        label  = _idx_to_label.get(idx, "Never")
+
+        self._vrr_status.setStyleSheet(f"color:{C_ORANGE};font-size:12px;background:transparent;")
+        self._vrr_status.setText("⏳  Applying…")
+
+        def _do():
+            errors = []
+            try:
+                data = _kscreen_json()
+                for o in data.get("outputs", []):
+                    if not o.get("enabled"): continue
+                    name    = o.get("name","")
+                    out_idx = _kscreen_output_idx(name)
+                    r = subprocess.run(
+                        ["kscreen-doctor", f"output.{out_idx}.vrrpolicy.{policy_str}"],
+                        capture_output=True, text=True, timeout=5
+                    )
+                    if r.returncode != 0 and r.stderr:
+                        errors.append(r.stderr.strip()[:60])
+                    _persist_vrr(name, policy)
+            except Exception as e:
+                errors.append(str(e)[:60])
+
+            from PyQt6.QtCore import QMetaObject, Q_ARG
+            if errors:
+                QMetaObject.invokeMethod(self._vrr_status, "setText",
+                    Qt.ConnectionType.QueuedConnection,
+                    Q_ARG(str, f"✗  {errors[0]}"))
+                self._vrr_status.setStyleSheet(
+                    f"color:{C_ORANGE};font-size:12px;background:transparent;")
+            else:
+                QMetaObject.invokeMethod(self._vrr_status, "setText",
+                    Qt.ConnectionType.QueuedConnection,
+                    Q_ARG(str, f"✓  VRR set to {label}"))
+                self._vrr_status.setStyleSheet(
+                    f"color:{C_GREEN};font-size:12px;background:transparent;")
+                send_notif("VRR / FreeSync", f"Adaptive sync → {label}", "display")
+
+        threading.Thread(target=_do, daemon=True).start()
+
+    def refresh(self, d=None):
+        pass
 # ══════════════════════════════════════════════════════════════════════════════
 # KEYBOARD PAGE — via legionaura
 # ══════════════════════════════════════════════════════════════════════════════
-class KeyboardPage(QWidget):
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        layout = QVBoxLayout(self)
-        lbl = QLabel("KeyboardPage")
-        lbl.setStyleSheet("color:#888;font-size:16px;")
-        lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        layout.addWidget(lbl)
+# Keyboard tab removed — MrDuartePT does not endorse untested LED drivers
+
+
 class SystemPage(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
