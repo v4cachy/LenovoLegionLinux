@@ -3851,11 +3851,109 @@ class BatteryPage(QWidget):
 class PerformancePage(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
-        layout = QVBoxLayout(self)
-        lbl = QLabel("PerformancePage")
-        lbl.setStyleSheet("color:#888;font-size:16px;")
-        lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        layout.addWidget(lbl)
+        self.setStyleSheet(f"background:{C_BG};")
+        self._build()
+
+    def _build(self):
+        scroll = QScrollArea(self); scroll.setWidgetResizable(True)
+        scroll.setStyleSheet("border:none;background:transparent;")
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        inner = QWidget(); inner.setStyleSheet(f"background:{C_BG};")
+        root = QVBoxLayout(inner); root.setContentsMargins(24,24,24,24); root.setSpacing(12)
+        lay = QVBoxLayout(self); lay.setContentsMargins(0,0,0,0); lay.addWidget(scroll)
+        scroll.setWidget(inner)
+
+        # Boost — detect AMD or Intel
+        bc, bl = make_card("CPU Boost")
+        br = QHBoxLayout()
+        bt_col = QVBoxLayout(); bt_col.setSpacing(3)
+        _intel_boost = Path("/sys/devices/system/cpu/intel_pstate/no_turbo")
+        _is_intel    = HW.get("cpu_vendor","amd") == "intel" if HW else False
+        _boost_path  = _intel_boost if _is_intel and _intel_boost.exists() else AMD_BOOST
+        _boost_label = "Intel Turbo Boost" if _is_intel else "AMD CPU Boost"
+        _boost_desc  = ("Allows CPU to exceed base clock. Intel Turbo Boost (no_turbo=0 = enabled)."
+                        if _is_intel else
+                        "Allows CPU to exceed base clock for short bursts. Auto-managed by power profile daemon.")
+        bt = QLabel(_boost_label)
+        bt.setStyleSheet(f"color:{C_TEXT};font-size:13px;font-weight:500;background:transparent;")
+        bd = QLabel(_boost_desc)
+        bd.setStyleSheet(f"color:{C_TEXT2};font-size:12px;background:transparent;"); bd.setWordWrap(True)
+        bt_col.addWidget(bt); bt_col.addWidget(bd)
+        br.addLayout(bt_col); br.addStretch()
+        _boost_read = "1" if _is_intel and rdsys(_boost_path,"1") == "0" else rdsys(_boost_path,"0")
+        self.boost_toggle = ToggleSwitch(_boost_path, read_val=_boost_read)
+        br.addWidget(self.boost_toggle, alignment=Qt.AlignmentFlag.AlignVCenter)
+        bl.addLayout(br); root.addWidget(bc)
+
+        # EPP
+        ec, el = make_card("Energy Performance Preference")
+        edesc = QLabel("Controls CPU energy/performance tradeoff. Daemon sets this per profile automatically.")
+        edesc.setWordWrap(True)
+        edesc.setStyleSheet(f"color:{C_TEXT2};font-size:12px;background:transparent;")
+        el.addWidget(edesc)
+        er = QHBoxLayout(); er.setSpacing(12)
+        lbl = QLabel("EPP Level"); lbl.setStyleSheet(f"color:{C_TEXT};font-size:13px;font-weight:500;background:transparent;")
+        er.addWidget(lbl)
+        self.epp_combo = QComboBox(); self.epp_combo.setStyleSheet(combo_style())
+        self.epp_combo.setFixedHeight(36)
+        cur_epp = get_epp()
+        for v in EPP_VALUES: self.epp_combo.addItem(EPP_LABELS[v], v)
+        if cur_epp in EPP_VALUES: self.epp_combo.setCurrentIndex(EPP_VALUES.index(cur_epp))
+        self.epp_combo.currentIndexChanged.connect(self._on_epp)
+        er.addWidget(self.epp_combo); er.addStretch()
+        el.addLayout(er)
+        self.epp_status = QLabel("")
+        self.epp_status.setStyleSheet(f"color:{C_GREEN};font-size:12px;font-weight:500;background:transparent;")
+        el.addWidget(self.epp_status); root.addWidget(ec)
+
+        # Fan & Thermal
+        fc, fl = make_card("Fan & Thermal")
+        for i, (t, d, p) in enumerate([
+            ("Fan Full Speed","Lock both fans to maximum speed immediately.", FAN_FULLSPEED),
+            ("Thermal Mode","Enhanced thermal performance for sustained workloads.", THERMAL_MODE),
+        ]):
+            fl.addWidget(NotifyToggle(t, d, p, notif_title=t))
+            if i == 0: fl.addWidget(make_div())
+        root.addWidget(fc)
+
+        # Live info
+        li, ll = make_card("Live CPU Info")
+        self.gov_row   = InfoRow("Governor","—"); ll.addWidget(self.gov_row)
+        self.freq_row  = InfoRow("Frequency","—"); ll.addWidget(self.freq_row)
+        self.temp_row  = InfoRow("Temperature","—"); ll.addWidget(self.temp_row)
+        self.boost_row = InfoRow("Boost State","—"); ll.addWidget(self.boost_row)
+        root.addWidget(li)
+        root.addStretch()
+
+    def _on_epp(self, idx):
+        val = EPP_VALUES[idx]; set_epp(val)
+        send_notif("EPP Changed", EPP_LABELS[val])
+        self.epp_status.setText(f"✓ Set to '{EPP_LABELS[val]}'")
+        QTimer.singleShot(2000, lambda: self.epp_status.setText(""))
+
+    def refresh(self, d=None):
+        # Accept data from sampler (no blocking reads)
+        if d:
+            boost = d.get("boost","0")
+            self.gov_row.set_value(d.get("gov","—"))
+            self.freq_row.set_value(f"{d.get('cpu_freq',0)} GHz")
+            self.temp_row.set_value(f"{d.get('cpu_temp',0)} °C")
+            epp = d.get("epp","default")
+        else:
+            boost = rdsys(AMD_BOOST,"0")
+            self.gov_row.set_value(get_governor())
+            self.freq_row.set_value(f"{get_cpu_freq_ghz()} GHz")
+            self.temp_row.set_value(f"{get_cpu_temp()} °C")
+            epp = get_epp()
+        self.boost_toggle._checked = boost == "1"
+        self.boost_toggle._cx = 22.0 if boost=="1" else 4.0
+        self.boost_toggle.update()
+        self.boost_row.set_value("ON ✓" if boost=="1" else "OFF ✗")
+        if epp in EPP_VALUES:
+            self.epp_combo.blockSignals(True)
+            self.epp_combo.setCurrentIndex(EPP_VALUES.index(epp))
+            self.epp_combo.blockSignals(False)
+
 # ══════════════════════════════════════════════════════════════════════════════
 # DISPLAY PAGE
 # ══════════════════════════════════════════════════════════════════════════════
@@ -3890,14 +3988,106 @@ class SystemPage(QWidget):
 # ══════════════════════════════════════════════════════════════════════════════
 # OVERCLOCK PAGE
 # ══════════════════════════════════════════════════════════════════════════════
-class OverclockPage(QWidget):
+class PowerOptionsPage(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
-        layout = QVBoxLayout(self)
-        lbl = QLabel("OverclockPage")
-        lbl.setStyleSheet("color:#888;font-size:16px;")
-        lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        layout.addWidget(lbl)
+        self.setStyleSheet(f"background:{C_BG};")
+        self._build()
+
+    def _build(self):
+        scroll = QScrollArea(self); scroll.setWidgetResizable(True)
+        scroll.setStyleSheet("border:none;background:transparent;")
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        inner = QWidget(); inner.setStyleSheet(f"background:{C_BG};")
+        root = QVBoxLayout(inner); root.setContentsMargins(24,24,24,24); root.setSpacing(12)
+        lay = QVBoxLayout(self); lay.setContentsMargins(0,0,0,0); lay.addWidget(scroll)
+        scroll.setWidget(inner)
+
+        note = QLabel("Power options use legion-cli where available. Unsupported options silently fail.")
+        note.setWordWrap(True)
+        note.setStyleSheet(f"color:{C_TEXT2};font-size:12px;background:transparent;")
+        root.addWidget(note)
+
+        cc, cl = make_card("CPU Power Limits")
+        cl.addWidget(_mk_lbl("Set PL1 (sustained) and PL2 (boost peak) power limits.", C_TEXT2, size=12))
+        cl.addWidget(make_div())
+        cur_pl1, cur_pl2 = get_cpu_tdp()
+        def _spin(lo, hi, val, suffix):
+            sp = QSpinBox(); sp.setRange(lo, hi); sp.setSuffix(suffix)
+            sp.setValue(val); sp.setSingleStep(1)
+            sp.setStyleSheet(f"QSpinBox{{background:{C_CARD2};color:{C_ORANGE};border:1px solid {C_BORDER};border-radius:6px;padding:6px;font-size:13px;min-width:100px;}}QSpinBox::up-button,QSpinBox::down-button{{width:22px;background:{C_CARD2};}}")
+            return sp
+        self.pl1_spin = _spin(5, 150, cur_pl1 or 35, " W")
+        self.pl2_spin = _spin(5, 150, cur_pl2 or 54, " W")
+        def _row(lbl, sp):
+            r = QHBoxLayout(); r.setSpacing(12)
+            lb = QLabel(lbl); lb.setFixedWidth(160)
+            lb.setStyleSheet(f"color:{C_TEXT};font-size:12px;background:transparent;")
+            r.addWidget(lb); r.addWidget(sp); r.addStretch()
+            return r
+        cl.addLayout(_row("PL1 (sustained W):", self.pl1_spin))
+        cl.addLayout(_row("PL2 (boost peak W):", self.pl2_spin))
+        apply_pl = QPushButton("Apply Power Limits")
+        apply_pl.setFixedHeight(32)
+        apply_pl.setStyleSheet(f"background:{C_ACCENT};color:#fff;border:none;border-radius:6px;font-size:12px;padding:0 16px;")
+        apply_pl.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.pl_status = QLabel("")
+        self.pl_status.setStyleSheet(f"color:{C_TEXT2};font-size:12px;background:transparent;")
+        pl_row = QHBoxLayout(); pl_row.addWidget(apply_pl); pl_row.addWidget(self.pl_status); pl_row.addStretch()
+        cl.addLayout(pl_row)
+        apply_pl.clicked.connect(self._apply_pl)
+        root.addWidget(cc)
+
+        gc, gl = make_card("GPU Power")
+        gl.addWidget(_mk_lbl("Set GPU power limit via nvidia-smi.", C_TEXT2, size=12))
+        gl.addWidget(make_div())
+        self.gpu_power_spin = _spin(15, 200, 0, " W")
+        gl.addLayout(_row("Power Limit:", self.gpu_power_spin))
+        apply_gpu = QPushButton("Apply GPU Power Limit")
+        apply_gpu.setFixedHeight(32)
+        apply_gpu.setStyleSheet(f"background:{C_ACCENT};color:#fff;border:none;border-radius:6px;font-size:12px;padding:0 16px;")
+        apply_gpu.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.gpu_status = QLabel("")
+        self.gpu_status.setStyleSheet(f"color:{C_TEXT2};font-size:12px;background:transparent;")
+        gpu_row = QHBoxLayout(); gpu_row.addWidget(apply_gpu); gpu_row.addWidget(self.gpu_status); gpu_row.addStretch()
+        gl.addLayout(gpu_row)
+        apply_gpu.clicked.connect(self._apply_gpu)
+        root.addWidget(gc)
+        root.addStretch()
+
+    def _apply_pl(self):
+        pl1_path, pl2_path = find_powercap_paths()
+        if pl1_path and pl2_path:
+            try:
+                wrsys(pl1_path, str(self.pl1_spin.value() * 1_000_000))
+                wrsys(pl2_path, str(self.pl2_spin.value() * 1_000_000))
+                self.pl_status.setText("OK  PL1={}W  PL2={}W".format(self.pl1_spin.value(), self.pl2_spin.value()))
+                self.pl_status.setStyleSheet(f"color:{C_GREEN};font-size:12px;background:transparent;")
+                return
+            except: pass
+        self.pl_status.setText("Power limit paths not found")
+        self.pl_status.setStyleSheet(f"color:{C_ORANGE};font-size:12px;background:transparent;")
+
+    def _apply_gpu(self):
+        w = self.gpu_power_spin.value()
+        if w <= 0:
+            self.gpu_status.setText("Set to 0 to skip")
+            self.gpu_status.setStyleSheet(f"color:{C_TEXT2};font-size:12px;background:transparent;")
+            return
+        try:
+            r = subprocess.run(["pkexec", "nvidia-smi", "-pl", str(w)], capture_output=True, text=True, timeout=5)
+            if r.returncode == 0:
+                self.gpu_status.setText(f"OK  GPU power limit: {w}W")
+                self.gpu_status.setStyleSheet(f"color:{C_GREEN};font-size:12px;background:transparent;")
+            else:
+                self.gpu_status.setText(f"Err: {r.stderr.strip()[:60]}")
+                self.gpu_status.setStyleSheet(f"color:{C_ORANGE};font-size:12px;background:transparent;")
+        except Exception as e:
+            self.gpu_status.setText(f"Err: {str(e)[:60]}")
+            self.gpu_status.setStyleSheet(f"color:{C_ORANGE};font-size:12px;background:transparent;")
+
+    def refresh(self, d=None): pass
+
 # ══════════════════════════════════════════════════════════════════════════════
 # FAN CURVE PAGE
 # ══════════════════════════════════════════════════════════════════════════════
