@@ -441,7 +441,11 @@ static const struct model_config model_v0 = {
 	.access_method_fanfullspeed = ACCESS_METHOD_WMI,
 	.acpi_check_dev = true,
 	.ramio_physical_start = 0xFE00D400,
-	.ramio_size = 0x600
+	.ramio_size = 0x600,
+	.acpi_paths = {
+		[ACPI_PATH_READ_RAPIDCHARGE] = "\\_SB.PCI0.LPC0.EC0.VPC0.GBMD",
+		[ACPI_PATH_WRITE_RAPIDCHARGE] = "\\_SB.PCI0.LPC0.EC0.VPC0.SBMC"
+	}
 };
 
 static const struct model_config model_j2cn = {
@@ -1481,7 +1485,7 @@ static int eval_int(struct acpi_device *adev, const char *name, unsigned long *r
 	acpi_status status;
 	acpi_handle handle;
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(7, 0, 0)
-	status = acpi_get_handle(NULL, (char *) name, &handle);
+	status = acpi_get_handle(NULL, (char *)name, &handle);
 	if (ACPI_FAILURE(status))
 		return -EIO;
 #else
@@ -1509,6 +1513,8 @@ static int exec_simple_method(struct acpi_device *adev, const char *name,
 	if (ACPI_FAILURE(status))
 		return -EIO;
 #else
+	if (!adev)
+		return -ENODEV;
 	handle = adev->handle;
 #endif
 	status =
@@ -6069,14 +6075,9 @@ static int acpi_init(struct legion_private *priv, struct acpi_device *adev)
 
 	acpi_path = get_model_acpi_path(_model, ACPI_PATH_WRITE_RAPIDCHARGE);
 	priv->adev = adev;
-#if LINUX_VERSION_CODE <= KERNEL_VERSION(7, 0, 0)
 	if (!priv->adev) {
-		dev_info(dev, "Could not get ACPI handle\n");
-		goto err_acpi_init;
+		dev_info(dev, "No ACPI handle, will use FQN paths\n");
 	}
-#else
-	dev_info(dev, "Ignoring ACPI handle\n");
-#endif
 	skip_acpi_sta_check = force || (!priv->conf->acpi_check_dev);
 	if (!skip_acpi_sta_check) {
 		acpi_path = get_model_acpi_path(_model, ACPI_PATH_STA);
