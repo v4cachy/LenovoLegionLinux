@@ -4088,25 +4088,607 @@ class PowerOptionsPage(QWidget):
 
     def refresh(self, d=None): pass
 
-# ══════════════════════════════════════════════════════════════════════════════
-# FAN CURVE PAGE
-# ══════════════════════════════════════════════════════════════════════════════
 class FanWidget(QWidget):
-    def __init__(self, parent=None):
+    """Animated fan icon — spins faster as RPM increases."""
+    def __init__(self, color: str, size: int = 64, parent=None):
         super().__init__(parent)
-        layout = QVBoxLayout(self)
-        lbl = QLabel("FanWidget")
-        lbl.setStyleSheet("color:#888;font-size:16px;")
-        lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        layout.addWidget(lbl)
+        self._color  = QColor(color)
+        self._dim    = QColor(color)
+        self._dim.setAlphaF(0.25)
+        self._angle  = 0.0
+        self._speed  = 0.0   # degrees per timer tick (60fps)
+        self._rpm    = 0
+        self.setFixedSize(size, size)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        self._timer = QTimer(self)
+        self._timer.timeout.connect(self._tick)
+        self._timer.start(16)   # ~60 fps
+
+    def set_rpm(self, rpm: int):
+        self._rpm = rpm
+        # Map RPM → degrees per frame
+        # 0 RPM = 0 deg/frame,  5000 RPM = 12 deg/frame (2 full rotations/sec)
+        self._speed = min(rpm / 5000 * 12.0, 14.0)
+
+    def _tick(self):
+        if self._speed > 0:
+            self._angle = (self._angle + self._speed) % 360
+            self.update()
+
+    def paintEvent(self, _):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        s = self.width()
+        cx, cy, r = s / 2, s / 2, s * 0.44
+
+        p.translate(cx, cy)
+        p.rotate(self._angle)
+
+        # Draw 3 blades, each 120° apart
+        BLADES = 3
+        for i in range(BLADES):
+            p.save()
+            p.rotate(i * (360 / BLADES))
+            # Blade: a rounded ellipse offset from center
+            blade_w = r * 0.52
+            blade_h = r * 0.78
+            grad = __import__('PyQt6.QtGui', fromlist=['QRadialGradient']).QRadialGradient(
+                0, -r * 0.35, r * 0.55)
+            grad.setColorAt(0.0, self._color)
+            grad.setColorAt(1.0, self._dim)
+            p.setBrush(grad)
+            p.setPen(Qt.PenStyle.NoPen)
+            # Offset blade away from center
+            p.translate(r * 0.28, -r * 0.38)
+            p.drawEllipse(
+                int(-blade_w / 2), int(-blade_h / 2),
+                int(blade_w), int(blade_h)
+            )
+            p.restore()
+
+        # Hub circle
+        hub_r = int(r * 0.22)
+        p.setBrush(self._color)
+        p.setPen(Qt.PenStyle.NoPen)
+        p.drawEllipse(-hub_r, -hub_r, hub_r * 2, hub_r * 2)
+
+        # Inner hub dot
+        inner = max(2, int(r * 0.08))
+        bg = QColor(C_BG)
+        p.setBrush(bg)
+        p.drawEllipse(-inner, -inner, inner * 2, inner * 2)
+
+        p.end()
+
+
 class FanPage(QWidget):
+    _fan_result = pyqtSignal(bool, str)
+
     def __init__(self, parent=None):
         super().__init__(parent)
-        layout = QVBoxLayout(self)
-        lbl = QLabel("FanPage")
-        lbl.setStyleSheet("color:#888;font-size:16px;")
-        lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        layout.addWidget(lbl)
+        self.setStyleSheet(f"background:{C_BG};")
+        self._fan_result.connect(self._on_fan_result)
+        self._mode = "auto"   # "auto" or "full"
+        self._build()
+        self._fan_timer = QTimer(self)
+        self._fan_timer.timeout.connect(self._refresh_rpm)
+        self._fan_timer.start(1500)
+
+    def _on_fan_result(self, ok: bool, msg: str):
+        color = C_GREEN if ok else C_ORANGE
+        self._status.setStyleSheet(
+            f"color:{color};font-size:12px;font-weight:600;background:transparent;")
+        self._status.setText(msg)
+
+    def _emit(self, ok: bool, msg: str):
+        self._fan_result.emit(ok, msg)
+
+    def _build(self):
+        scroll = QScrollArea(self); scroll.setWidgetResizable(True)
+        scroll.setStyleSheet("border:none;background:transparent;")
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        inner = QWidget(); inner.setStyleSheet(f"background:{C_BG};")
+        root = QVBoxLayout(inner); root.setContentsMargins(24,24,24,24); root.setSpacing(12)
+        lay = QVBoxLayout(self); lay.setContentsMargins(0,0,0,0); lay.addWidget(scroll)
+        scroll.setWidget(inner)
+
+        # ── Live RPM ──────────────────────────────────────────────────────────
+        rc, rl = make_card("Live Fan Speed")
+        rpm_row = QHBoxLayout(); rpm_row.setSpacing(48)
+        rpm_row.addStretch()
+        for attr, fan_attr, label, color in [
+            ("cpu_rpm_lbl", "cpu_fan_widget", "CPU Fan", C_BLUE),
+            ("gpu_rpm_lbl", "gpu_fan_widget", "GPU Fan", C_RED),
+        ]:
+            col = QVBoxLayout(); col.setSpacing(6)
+            col.setAlignment(Qt.AlignmentFlag.AlignHCenter)
+
+            fan_w = FanWidget(color, size=64)
+            setattr(self, fan_attr, fan_w)
+            fan_w_wrap = QHBoxLayout()
+            fan_w_wrap.addStretch(); fan_w_wrap.addWidget(fan_w); fan_w_wrap.addStretch()
+
+            lbl = QLabel("— RPM")
+            lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            lbl.setStyleSheet(
+                f"color:{color};font-size:22px;font-weight:600;background:transparent;")
+            name = QLabel(label)
+            name.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            name.setStyleSheet(f"color:{C_TEXT2};font-size:12px;background:transparent;")
+            setattr(self, attr, lbl)
+            col.addLayout(fan_w_wrap); col.addWidget(lbl); col.addWidget(name)
+            rpm_row.addLayout(col)
+        rpm_row.addStretch()
+        rl.addLayout(rpm_row)
+        self.fan_mode_badge = QLabel("Mode: Auto")
+        self.fan_mode_badge.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.fan_mode_badge.setStyleSheet(
+            f"color:{C_TEXT3};font-size:12px;background:transparent;")
+        rl.addWidget(self.fan_mode_badge)
+        root.addWidget(rc)
+
+        # ── Fan Control ───────────────────────────────────────────────────────
+        cc, cl = make_card("Fan Control")
+
+        # Fan curve is read lazily — only when user opens this tab
+        self._curve_loaded = False
+        self._curve_points = []
+        lll_status = get_lll_status()
+        lll_available = is_lll_available()
+        fs_ok = FAN_FULLSPEED.exists()
+        has_curve = bool(is_lll_available())
+        
+        note_lines = []
+        if lll_available:
+            note_lines.append(get_fan_status_message())
+            note_lines.append(f"fan_fullspeed: {FAN_FULLSPEED}")
+            note_lines.append("")
+            note_lines.append("Use Power Mode (Quiet / Balanced / Performance)")
+            note_lines.append("or custom fan curve (LLL required).")
+        elif lll_status["module_loaded"]:
+            note_lines.append("⚠  LLL module loaded but device NOT bound")
+            note_lines.append(f"  Kernel: {Path('/proc/sys/kernel/osrelease').read_text().split()[0]}")
+            note_lines.append("")
+            note_lines.append("The module loaded but no hwmon device was created.")
+            note_lines.append("This usually means kernel 7.x is not supported yet.")
+            note_lines.append("")
+            note_lines.append("Try force loading:")
+            note_lines.append("  sudo modprobe -r legion_laptop")
+            note_lines.append("  sudo modprobe legion_laptop force=1")
+            note_lines.append("")
+            note_lines.append("OR downgrade to kernel 6.x:")
+            note_lines.append("  sudo pacman -S linux-cachyos#6.19.2")
+        else:
+            note_lines.append("⚠  LLL not loaded — limited fan control")
+            note_lines.append("")
+            note_lines.append("For full fan control, install lenovolegionlinux:")
+            note_lines.append("  sudo pacman -S cachyos/lenovolegionlinux")
+            note_lines.append("  sudo modprobe legion_laptop")
+            note_lines.append("")
+            note_lines.append("OR if module loads but no device:")
+            note_lines.append("  sudo modprobe legion_laptop force=1")
+        
+        note = QLabel("\n".join(note_lines))
+        note.setWordWrap(True)
+        note.setStyleSheet(f"color:{C_TEXT2};font-size:12px;background:transparent;")
+        cl.addWidget(note)
+        cl.addWidget(make_div())
+
+        # Two big buttons: Auto and Full Speed
+        btn_row = QHBoxLayout(); btn_row.setSpacing(12)
+
+        self._auto_btn = QPushButton("🌡️  Auto / Dynamic")
+        self._auto_btn.setCheckable(True); self._auto_btn.setChecked(True)
+        self._auto_btn.setFixedHeight(48)
+        self._auto_btn.setStyleSheet(
+            f"QPushButton{{background:{C_CARD2};color:{C_TEXT2};"
+            f"border:1px solid {C_BORDER};border-radius:8px;"
+            f"font-size:13px;font-weight:600;}}"
+            f"QPushButton:checked{{background:transparent;color:{C_GREEN};"
+            f"border:2px solid {C_GREEN};}}"
+            f"QPushButton:hover:!checked{{border:1px solid #555;color:{C_TEXT};}}"
+        )
+        self._auto_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._auto_btn.clicked.connect(lambda: self._set_mode("auto"))
+
+        self._full_btn = QPushButton("🌀  Full Speed")
+        self._full_btn.setCheckable(True); self._full_btn.setChecked(False)
+        self._full_btn.setFixedHeight(48)
+        self._full_btn.setStyleSheet(
+            f"QPushButton{{background:{C_CARD2};color:{C_TEXT2};"
+            f"border:1px solid {C_BORDER};border-radius:8px;"
+            f"font-size:13px;font-weight:600;}}"
+            f"QPushButton:checked{{background:transparent;color:{C_RED};"
+            f"border:2px solid {C_RED};}}"
+            f"QPushButton:hover:!checked{{border:1px solid #555;color:{C_TEXT};}}"
+        )
+        self._full_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._full_btn.clicked.connect(lambda: self._set_mode("full"))
+
+        # Lock Fan Controller button
+        lock_enabled = get_fan_lock_status()
+        self._lockfan_btn = QPushButton("🔒  Lock")
+        self._lockfan_btn.setCheckable(True)
+        self._lockfan_btn.setChecked(lock_enabled)
+        self._lockfan_btn.setFixedHeight(48)
+        self._lockfan_btn.setStyleSheet(
+            f"QPushButton{{background:{C_CARD2};color:{C_TEXT2};"
+            f"border:1px solid {C_BORDER};border-radius:8px;"
+            f"font-size:13px;font-weight:600;}}"
+            f"QPushButton:checked{{background:{C_RED};color:{C_BG};}}"
+            f"QPushButton:hover:!checked{{border:1px solid {C_RED};}}"
+        )
+        self._lockfan_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._lockfan_btn.clicked.connect(lambda: self._apply_lockfan(self._lockfan_btn.isChecked()))
+
+        # Mini Fan Curve button
+        mini_enabled = get_minifancurve_status()
+        self._minifan_btn = QPushButton("🌡️  Mini")
+        self._minifan_btn.setCheckable(True)
+        self._minifan_btn.setChecked(mini_enabled)
+        self._minifan_btn.setFixedHeight(48)
+        self._minifan_btn.setStyleSheet(
+            f"QPushButton{{background:{C_CARD2};color:{C_TEXT2};"
+            f"border:1px solid {C_BORDER};border-radius:8px;"
+            f"font-size:13px;font-weight:600;}}"
+            f"QPushButton:checked{{background:{C_GREEN};color:{C_BG};}}"
+            f"QPushButton:hover:!checked{{border:1px solid {C_GREEN};}}"
+        )
+        self._minifan_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._minifan_btn.clicked.connect(lambda: self._apply_minifan(self._minifan_btn.isChecked()))
+
+        btn_row.addWidget(self._auto_btn); btn_row.addWidget(self._full_btn)
+        btn_row.addWidget(self._lockfan_btn); btn_row.addWidget(self._minifan_btn)
+        cl.addLayout(btn_row)
+
+        self._mode_desc = QLabel(
+            "Firmware controls fans based on CPU/GPU temperature. Recommended.")
+        self._mode_desc.setStyleSheet(
+            f"color:{C_TEXT2};font-size:12px;background:transparent;")
+        self._mode_desc.setWordWrap(True)
+        cl.addWidget(self._mode_desc)
+
+        # Status
+        self._status = QLabel("")
+        self._status.setStyleSheet(
+            f"color:{C_GREEN};font-size:12px;background:transparent;")
+        cl.addWidget(self._status)
+        
+        # ── 10-Point Fan Curve Editor ──────────────────────────────────────────────────
+        if has_curve and lll_available:
+            fce, fcel = make_card("🎛️  Custom Fan Curve Editor")
+            
+            # Instructions
+            fcel.addWidget(_mk_lbl(
+                "Edit each point: temperature (°C) where fan speed changes.\n"
+                "PWM = fan speed (0-255), Accel/Decel = speed change rate.",
+                C_TEXT2, size=11))
+            
+            # Create table for 10 points
+            curve_scroll = QScrollArea()
+            curve_scroll.setWidgetResizable(True)
+            curve_scroll.setFixedHeight(280)
+            
+            curve_widget = QWidget()
+            curve_layout = QVBoxLayout()
+            
+            # Headers
+            header = QLabel("Pt | CPU Temp | Fan1 PWM | Fan2 PWM | Accel | Decel")
+            header.setStyleSheet(f"color:{C_ACCENT};font-weight:600;font-size:12px;")
+            curve_layout.addWidget(header)
+            
+            # Parse current curve
+            current_points = parse_fancurve(curve_text) if curve_text else []
+            
+            # Create 10 input rows
+            self._curve_points = []
+            for i in range(10):
+                row = QHBoxLayout()
+                
+                # Point label
+                lbl = QLabel(f"{i+1}")
+                lbl.setFixedWidth(25)
+                row.addWidget(lbl)
+                
+                # CPU Temp (threshold to switch to this fan speed)
+                temp_spin = QSpinBox()
+                temp_spin.setRange(30, 95)
+                temp_spin.setValue(current_points[i].get("cpu_max", 50) if i < len(current_points) else 40 + i*5)
+                temp_spin.setFixedWidth(60)
+                row.addWidget(QLabel("°C")); row.addWidget(temp_spin)
+                row.addStretch()
+                
+                # Fan1 PWM
+                pwm1_spin = QSpinBox()
+                pwm1_spin.setRange(0, 255)
+                pwm1_spin.setValue(current_points[i].get("fan1_pwm", 50 + i*20) if i < len(current_points) else min(255, 50 + i*20))
+                pwm1_spin.setFixedWidth(60)
+                row.addWidget(QLabel("F1")); row.addWidget(pwm1_spin)
+                row.addStretch()
+                
+                # Fan2 PWM  
+                pwm2_spin = QSpinBox()
+                pwm2_spin.setRange(0, 255)
+                pwm2_spin.setValue(current_points[i].get("fan2_pwm", 50 + i*20) if i < len(current_points) else min(255, 50 + i*20))
+                pwm2_spin.setFixedWidth(60)
+                row.addWidget(QLabel("F2")); row.addWidget(pwm2_spin)
+                row.addStretch()
+                
+                # Accel
+                accel_spin = QSpinBox()
+                accel_spin.setRange(1, 10)
+                accel_spin.setValue(current_points[i].get("accel", 5) if i < len(current_points) else 5)
+                accel_spin.setFixedWidth(45)
+                row.addWidget(QLabel("Acc")); row.addWidget(accel_spin)
+                
+                # Decel
+                decel_spin = QSpinBox()
+                decel_spin.setRange(1, 10)
+                decel_spin.setValue(current_points[i].get("decel", 5) if i < len(current_points) else 5)
+                decel_spin.setFixedWidth(45)
+                row.addWidget(QLabel("Dec")); row.addWidget(decel_spin)
+                
+                self._curve_points.append({
+                    "temp": temp_spin,
+                    "pwm1": pwm1_spin,
+                    "pwm2": pwm2_spin,
+                    "accel": accel_spin,
+                    "decel": decel_spin,
+                })
+                curve_layout.addLayout(row)
+            
+            # Buttons for save/load/apply
+            btn_row = QHBoxLayout()
+            btn_row.setSpacing(8)
+            
+            apply_btn = QPushButton("💾  Apply to Hardware")
+            apply_btn.setStyleSheet(f"background:{C_ACCENT};color:{C_BG};border-radius:6px;padding:8px;")
+            apply_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            apply_btn.clicked.connect(self._apply_fan_curve_editor)
+            btn_row.addWidget(apply_btn)
+            
+            save_preset_btn = QPushButton("💾  Save Preset")
+            save_preset_btn.setStyleSheet(f"background:{C_CARD2};color:{C_TEXT};border:1px solid {C_BORDER};border-radius:6px;padding:8px;")
+            save_preset_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            save_preset_btn.clicked.connect(lambda: self._save_fan_preset("custom"))
+            btn_row.addWidget(save_preset_btn)
+            
+            load_preset_btn = QPushButton("📂  Load Preset")
+            load_preset_btn.setStyleSheet(f"background:{C_CARD2};color:{C_TEXT};border:1px solid {C_BORDER};border-radius:6px;padding:8px;")
+            load_preset_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            load_preset_btn.clicked.connect(lambda: self._load_fan_preset("custom"))
+            btn_row.addWidget(load_preset_btn)
+            
+            curve_layout.addLayout(btn_row)
+            curve_widget.setLayout(curve_layout)
+            curve_scroll.setWidget(curve_widget)
+            fcel.addWidget(curve_scroll)
+            
+            # Store reference to hide/show based on fan mode
+            self._fancurve_editor = fce
+            self._fancurve_editor.setVisible(False)  # Hidden by default (use Auto mode)
+            
+            root.addWidget(fce)
+            root.addWidget(make_div())
+
+        root.addWidget(cc)
+
+        # ── Info card ─────────────────────────────────────────────────────────
+        ic, il = make_card("ℹ️  Fan Curve Control")
+        info_text = QLabel(
+            "To adjust fan aggressiveness, change your Power Mode:\n\n"
+            "🔵  Quiet          —  Minimal fan noise, lower temps acceptable\n"
+            "⚪  Balanced      —  Balanced fan curve for everyday use\n"
+            "🔴  Performance  —  Aggressive cooling for sustained loads\n"
+            "🩷  Custom        —  Maximum fan speed, loudest\n\n"
+            "Each profile has its own firmware-defined fan curve baked in."
+        )
+        info_text.setWordWrap(True)
+        info_text.setStyleSheet(f"color:{C_TEXT2};font-size:12px;background:transparent;")
+        il.addWidget(info_text)
+        root.addWidget(ic)
+
+        # ── ThinkPad fan levels (only on ThinkPad) ────────────────────────────
+        if HW.get("tp_fan_control"):
+            tfc, tfl = make_card("🌀  ThinkPad Fan Control")
+            tfl.addWidget(_mk_lbl(
+                "ThinkPad fan levels via /proc/acpi/ibm/fan.\n"
+                "Level 0 = off  ·  1–7 = increasing speed  ·  Auto = firmware control",
+                C_TEXT2, size=11))
+            tfl.addWidget(make_div())
+
+            # Read current level
+            def _get_tp_fan() -> str:
+                try:
+                    txt = Path("/proc/acpi/ibm/fan").read_text()
+                    for line in txt.splitlines():
+                        if line.startswith("level:"): return line.split(":")[1].strip()
+                except: pass
+                return "auto"
+
+            level_row = QHBoxLayout(); level_row.setSpacing(12)
+            lv_lbl = QLabel("Fan Level:")
+            lv_lbl.setStyleSheet(f"color:{C_TEXT};font-size:12px;background:transparent;")
+            self._tp_fan_combo = QComboBox()
+            self._tp_fan_combo.setStyleSheet(combo_style())
+            self._tp_fan_combo.setFixedHeight(34)
+            levels = ["auto", "0", "1", "2", "3", "4", "5", "6", "7", "disengaged"]
+            level_labels = {
+                "auto": "Auto (firmware)", "0": "0 — Off",
+                "1": "1 — Very quiet", "2": "2 — Quiet",
+                "3": "3 — Low", "4": "4 — Medium",
+                "5": "5 — High", "6": "6 — Very high",
+                "7": "7 — Maximum", "disengaged": "Disengaged (max RPM)"
+            }
+            cur_lv = _get_tp_fan()
+            for lv in levels:
+                self._tp_fan_combo.addItem(level_labels.get(lv, lv), lv)
+            cur_idx = levels.index(cur_lv) if cur_lv in levels else 0
+            self._tp_fan_combo.setCurrentIndex(cur_idx)
+            level_row.addWidget(lv_lbl); level_row.addWidget(self._tp_fan_combo); level_row.addStretch()
+            tfl.addLayout(level_row)
+
+            tp_fan_apply = QPushButton("Apply Fan Level")
+            tp_fan_apply.setFixedHeight(32)
+            tp_fan_apply.setStyleSheet(
+                f"background:{C_ACCENT};color:#fff;border:none;"
+                f"border-radius:6px;font-size:12px;padding:0 16px;")
+            tp_fan_apply.setCursor(Qt.CursorShape.PointingHandCursor)
+            tp_fan_apply.clicked.connect(self._apply_tp_fan)
+            self._tp_fan_status = QLabel("")
+            self._tp_fan_status.setStyleSheet(f"color:{C_GREEN};font-size:12px;background:transparent;")
+            tp_btn_row = QHBoxLayout()
+            tp_btn_row.addWidget(tp_fan_apply); tp_btn_row.addWidget(self._tp_fan_status); tp_btn_row.addStretch()
+            tfl.addLayout(tp_btn_row)
+            root.addWidget(tfc)
+
+        root.addStretch()
+        self._refresh_rpm()
+
+    def _apply_gsync(self, enable: bool):
+        """Apply G-Sync/Hybrid mode toggle."""
+        ok, msg = set_gsync(enable)
+        if ok:
+            self._gsync_btn.setText("🔄  G-Sync  ✓" if enable else "🔄  G-Sync  ○")
+            send_notif("G-Sync", msg, "display")
+        else:
+            send_notif("G-Sync Error", msg, "dialog-error")
+
+    def _apply_lockfan(self, lock: bool):
+        """Apply fan lock toggle."""
+        ok, msg = set_fan_lock(lock)
+        if ok:
+            send_notif("Fan Controller", msg, "computer")
+        else:
+            send_notif("Fan Lock Error", msg, "dialog-error")
+
+    def _apply_minifan(self, enable: bool):
+        """Apply mini fan curve toggle."""
+        ok, msg = set_minifancurve(enable)
+        if ok:
+            send_notif("Mini Fan Curve", msg, "computer")
+        else:
+            send_notif("Mini Fan Error", msg, "dialog-error")
+
+    def _apply_fan_curve_editor(self):
+        """Apply the custom fan curve from the editor."""
+        points = []
+        for pt in self._curve_points:
+            points.append({
+                "fan1_pwm": pt["pwm1"].value(),
+                "fan2_pwm": pt["pwm2"].value(),
+                "cpu_temp": pt["temp"].value(),
+                "accel": pt["accel"].value(),
+                "decel": pt["decel"].value(),
+            })
+        
+        ok, msg = write_fancurve_to_hw(points)
+        if ok:
+            self._status.setText(f"✓  {msg}")
+            send_notif("Fan Curve", msg, "computer")
+        else:
+            self._status.setText(f"✗  {msg}")
+            send_notif("Fan Curve Error", msg, "dialog-error")
+
+    def _save_fan_preset(self, name: str):
+        """Save current fan curve to a preset file."""
+        points = []
+        for pt in self._curve_points:
+            points.append({
+                "fan1_pwm": pt["pwm1"].value(),
+                "fan2_pwm": pt["pwm2"].value(),
+                "cpu_temp": pt["temp"].value(),
+                "accel": pt["accel"].value(),
+                "decel": pt["decel"].value(),
+            })
+        
+        if save_fancurve_to_file(points, name):
+            send_notif("Fan Curve", f"Saved preset: {name}", "computer")
+        else:
+            send_notif("Save Error", "Failed to save preset", "dialog-error")
+
+    def _load_fan_preset(self, name: str):
+        """Load a fan curve preset into the editor."""
+        points = load_fancurve_from_file(name)
+        if not points:
+            send_notif("Load Error", f"No preset found: {name}", "dialog-error")
+            return
+        
+        # Update the UI
+        for i, pt in enumerate(points[:10]):
+            if i < len(self._curve_points):
+                self._curve_points[i]["temp"].setValue(pt.get("cpu_temp", 50))
+                self._curve_points[i]["pwm1"].setValue(pt.get("fan1_pwm", 100))
+                self._curve_points[i]["pwm2"].setValue(pt.get("fan2_pwm", 100))
+                self._curve_points[i]["accel"].setValue(pt.get("accel", 5))
+                self._curve_points[i]["decel"].setValue(pt.get("decel", 5))
+        
+        send_notif("Fan Curve", f"Loaded preset: {name}", "computer")
+
+    def _apply_tp_fan(self):
+        level = self._tp_fan_combo.currentData()
+        def _do():
+            try:
+                r = subprocess.run(
+                    ["pkexec", "sh", "-c",
+                     f"echo 'level {level}' > /proc/acpi/ibm/fan"],
+                    capture_output=True, text=True, timeout=8
+                )
+                if r.returncode == 0:
+                    self._tp_fan_status.setText(f"✓  Fan level → {level}")
+                    send_notif("ThinkPad Fan", f"Fan level set to {level}", "computer")
+                else:
+                    self._tp_fan_status.setText(f"✗  {r.stderr.strip()[:80]}")
+            except Exception as e:
+                self._tp_fan_status.setText(f"✗  {e}")
+        threading.Thread(target=_do, daemon=True).start()
+
+    def _set_mode(self, mode: str):
+        self._mode = mode
+        self._auto_btn.setChecked(mode == "auto")
+        self._full_btn.setChecked(mode == "full")
+        self._mode_desc.setText(
+            "Firmware controls fans based on CPU/GPU temperature. Recommended."
+            if mode == "auto" else
+            "Both fans locked to 100% — maximum cooling, louder."
+        )
+        
+        # Show/hide fan curve editor based on mode
+        if hasattr(self, '_fancurve_editor'):
+            self._fancurve_editor.setVisible(mode != "auto")
+        
+        self._on_fan_result(False, f"⏳  Applying…")
+
+        def _do():
+            if mode == "auto":
+                ok, msg = _write_fan_auto()
+                self._emit(ok, "✓  Auto fan control active" if ok else f"✗  {msg}")
+            else:
+                ok, msg = _write_fan_fullspeed(True)
+                self._emit(ok, "✓  Full speed active" if ok else f"✗  {msg}")
+        threading.Thread(target=_do, daemon=True).start()
+
+    def _refresh_rpm(self):
+        rpm1, rpm2 = get_fan_rpm()
+        # Update animated fan widgets
+        self.cpu_fan_widget.set_rpm(rpm1)
+        self.gpu_fan_widget.set_rpm(rpm2)
+        # Update labels
+        self.cpu_rpm_lbl.setText(f"{rpm1:,}" if rpm1 > 0 else "—")
+        self.gpu_rpm_lbl.setText(f"{rpm2:,}" if rpm2 > 0 else "—")
+        mode_label = "Full Speed" if self._mode == "full" else "Auto"
+        self.fan_mode_badge.setText(f"Mode: {mode_label}")
+        for lbl, rpm, base_col in [
+            (self.cpu_rpm_lbl, rpm1, C_BLUE),
+            (self.gpu_rpm_lbl, rpm2, C_RED),
+        ]:
+            c = C_RED if rpm > 5000 else C_ORANGE if rpm > 2500 else base_col
+            lbl.setStyleSheet(
+                f"color:{c};font-size:22px;font-weight:600;background:transparent;")
+
+    def refresh(self, d=None):
+        self._refresh_rpm()
+
 # ══════════════════════════════════════════════════════════════════════════════
 class ActionsPage(QWidget):
     def __init__(self, parent=None):
