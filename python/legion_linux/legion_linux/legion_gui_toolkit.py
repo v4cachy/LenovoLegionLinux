@@ -3202,22 +3202,649 @@ def scrollable(widget_factory):
 class HomePage(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
-        layout = QVBoxLayout(self)
-        lbl = QLabel("HomePage")
-        lbl.setStyleSheet("color:#888;font-size:16px;")
-        lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        layout.addWidget(lbl)
+        self.setStyleSheet(f"background:{C_BG};")
+        self._last_profile = None
+        self._build()
+
+    def _build(self):
+        scroll = QScrollArea(self); scroll.setWidgetResizable(True)
+        scroll.setStyleSheet("border:none;background:transparent;")
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        inner = QWidget(); inner.setStyleSheet(f"background:{C_BG};")
+        root = QVBoxLayout(inner); root.setContentsMargins(24,24,24,24); root.setSpacing(12)
+        root.setAlignment(Qt.AlignmentFlag.AlignTop)
+        lay = QVBoxLayout(self); lay.setContentsMargins(0,0,0,0); lay.addWidget(scroll)
+        scroll.setWidget(inner)
+
+        # ── Hardware Monitor Card ─────────────────────────────────────────
+        hw = QWidget(); hw.setStyleSheet(f"background:{C_CARD};border-radius:12px;")
+        hw.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum)
+        hw_outer = QHBoxLayout(hw); hw_outer.setContentsMargins(0,0,0,0); hw_outer.setSpacing(0)
+
+        def hw_col(stretch=1):
+            w = QWidget(); w.setStyleSheet("background:transparent;")
+            w.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Maximum)
+            l = QVBoxLayout(w); l.setContentsMargins(16,14,16,14); l.setSpacing(2)
+            l.setAlignment(Qt.AlignmentFlag.AlignTop)
+            return w, l
+
+        def col_hdr(text, badge_widget=None):
+            row = QHBoxLayout(); row.setSpacing(8); row.setContentsMargins(0,0,0,8)
+            lbl = QLabel(text)
+            lbl.setStyleSheet(f"color:{C_TEXT};font-size:13px;font-weight:600;background:transparent;")
+            row.addWidget(lbl)
+            if badge_widget: row.addWidget(badge_widget)
+            row.addStretch()
+            hdr_w = QWidget(); hdr_w.setStyleSheet("background:transparent;")
+            hdr_l = QVBoxLayout(hdr_w); hdr_l.setContentsMargins(0,0,0,4); hdr_l.setSpacing(3)
+            hdr_l.addLayout(row)
+            return hdr_w
+
+        def vdiv():
+            f = QWidget(); f.setFixedWidth(12); f.setStyleSheet("background:transparent;")
+            f.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Expanding)
+            return f
+
+        # CPU column
+        cpu_w, cpu_l = hw_col(3)
+        cpu_l.addWidget(col_hdr("CPU"))
+        self.r_util  = StatRow("Utilization",  "0%",      0)
+        self.r_freq  = StatRow("Core Clock",   "0.0 GHz", 0, val_w=80)
+        self.r_temp  = StatRow("Temperature",  "0 °C",    0, val_w=80)
+        self.r_ic_temp = StatRow("IC Temp",    "—",     0, val_w=80)
+        self.r_ic_temp.setToolTip("Integrated Controller temperature (requires LLL)")
+        self.r_fan1  = StatRow("Fan 1",        "0 RPM",   0, val_w=80)
+        self.r_fan2  = StatRow("Fan 2",        "0 RPM",   0, val_w=80)
+        for r in [self.r_util,self.r_freq,self.r_temp,
+                  self.r_ic_temp,self.r_fan1,self.r_fan2]:
+            cpu_l.addWidget(r)
+
+        # GPU column
+        gpu_w, gpu_l = hw_col(3)
+        self.gpu_pstate_lbl = QLabel("P-State: —")
+        self.gpu_pstate_lbl.setStyleSheet(
+            f"color:{C_BLUE};font-size:12px;background:transparent;"
+            f"border:none;border-radius:4px;padding:2px 6px;"
+        )
+        self.gpu_pstate_lbl.setToolTip("GPU Performance State\nP0=Max  P2=Mid  P8=Idle")
+        gpu_l.addWidget(col_hdr("GPU", self.gpu_pstate_lbl))
+        self.r_g_util = StatRow("Utilization",  "—", 0, val_w=90, color=C_BLUE)
+        self.r_g_freq = StatRow("Core Clock",   "—", 0, val_w=90, color=C_BLUE)
+        self.r_g_temp = StatRow("Temperature",  "—", 0, val_w=90)
+        self.r_g_mem  = StatRow("VRAM Used",    "—", 0, val_w=90, color=C_BLUE)
+        self.r_g_pow  = StatRow("Power Draw",   "—", 0, val_w=90, color=C_ORANGE)
+        for r in [self.r_g_util,self.r_g_freq,self.r_g_temp,self.r_g_mem,self.r_g_pow]:
+            gpu_l.addWidget(r)
+        self.gpu_na = QLabel("nvidia-smi not found — yay -S nvidia-utils")
+        self.gpu_na.setStyleSheet(f"color:{C_TEXT3};font-size:10px;background:transparent;")
+        self.gpu_na.hide(); gpu_l.addWidget(self.gpu_na)
+
+        # Memory & Battery column
+        mem_w, mem_l = hw_col(2)
+        mem_l.addWidget(col_hdr("Memory & Battery"))
+        self.r_ram   = StatRow("RAM Used",  "0 MB",  0, val_w=120)
+        self.r_bat   = StatRow("Battery",   "0%",    0, val_w=120, color=C_GREEN)
+        self.r_bstat = StatRow("Status",    "—",     0, val_w=120)
+        self.r_bpow  = StatRow("Draw",      "— W",   0, val_w=120)
+        for r in [self.r_ram,self.r_bat,self.r_bstat,self.r_bpow]:
+            mem_l.addWidget(r)
+
+        hw_outer.addWidget(cpu_w, 3); hw_outer.addWidget(vdiv())
+        hw_outer.addWidget(gpu_w, 3); hw_outer.addWidget(vdiv())
+        hw_outer.addWidget(mem_w, 2)
+        root.addWidget(hw)
+
+        # ── Power  +  Graphics  (2-column, LLT-style) ───────────────────────
+        two_col = QHBoxLayout(); two_col.setSpacing(10)
+
+        # ── LEFT: Power card ─────────────────────────────────────────────────
+        pw, pl = make_card("Power")
+
+        def _setting_row(icon_text, title, desc, control_widget):
+            """LLT-style row: icon | title+desc | control"""
+            row_w = QWidget(); row_w.setStyleSheet("background:transparent;")
+            row_w.setMinimumHeight(60)
+            rl = QHBoxLayout(row_w); rl.setContentsMargins(0,6,0,6); rl.setSpacing(14)
+            icon = QLabel(icon_text)
+            icon.setFixedWidth(32)
+            icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            icon.setStyleSheet("font-size:18px;background:transparent;")
+            txt = QVBoxLayout(); txt.setSpacing(3)
+            t = QLabel(title)
+            t.setStyleSheet(f"color:{C_TEXT};font-size:13px;font-weight:500;background:transparent;")
+            d = QLabel(desc); d.setWordWrap(True)
+            d.setStyleSheet(f"color:{C_TEXT2};font-size:12px;background:transparent;")
+            txt.addWidget(t); txt.addWidget(d)
+            rl.addWidget(icon)
+            rl.addLayout(txt, 1)
+            rl.addWidget(control_widget, 0, Qt.AlignmentFlag.AlignVCenter)
+            return row_w
+
+        def _combo(options, current_idx=0):
+            c = QComboBox(); c.setStyleSheet(combo_style())
+            c.setFixedWidth(170); c.setFixedHeight(34)
+            for o in options:
+                if isinstance(o, tuple):
+                    c.addItem(o[0])                        # display text
+                    c.setItemData(c.count()-1, o[1])       # sysfs name as UserRole data
+                else:
+                    c.addItem(o)
+            c.setCurrentIndex(current_idx)
+            return c
+
+        # Power Mode dropdown
+        cur_profile  = _read_powermode()
+        profile_opts = [(PROFILE_LABELS.get(p,p), p) for p in PROFILES]
+        cur_idx      = next((i for i,(_,p) in enumerate(profile_opts) if p == cur_profile), 0)
+        self.power_combo = _combo(profile_opts, cur_idx)
+        self.power_combo.currentIndexChanged.connect(self._on_power_combo)
+        pl.addWidget(_setting_row("⚡", "Power Mode",
+            "Change performance profile.  Also: Fn+Q",
+            self.power_combo))
+        pl.addWidget(make_div())
+
+        # Battery Mode dropdown
+        cons = rdsys(CONSERVATION_MODE,"0"); rapid = rdsys(RAPID_CHARGE,"0")
+        bat_mode_now = 1 if cons=="1" else 2 if rapid=="1" else 0
+        self.bat_combo = _combo(["Normal", "Conservation (~60%)", "Rapid Charge"], bat_mode_now)
+        self.bat_combo.currentIndexChanged.connect(self._on_bat_combo)
+        pl.addWidget(_setting_row("🔋", "Battery Mode",
+            "Choose how the battery is charged.", self.bat_combo))
+        pl.addWidget(make_div())
+
+        # Always on USB toggle
+        usb_tog = ToggleSwitch(path=USB_CHARGING,
+                               read_val=rdsys(USB_CHARGING,"0"))
+        pl.addWidget(_setting_row("🔌", "Always on USB",
+            "Charge USB devices when laptop is off or sleeping.", usb_tog))
+        pl.addWidget(make_div())
+
+        # Fn Lock toggle
+        fn_tog = ToggleSwitch(path=FN_LOCK, read_val=rdsys(FN_LOCK,"0"))
+        pl.addWidget(_setting_row("⌨️", "Fn Lock",
+            "Swap Fn and media keys so F1–F12 work as function keys.", fn_tog))
+
+        two_col.addWidget(pw, 1)
+
+        # ── RIGHT: Graphics card ──────────────────────────────────────────────
+        gw, gl = make_card("Graphics")
+
+        # GPU Working Mode via envycontrol
+        # Read current mode from envycontrol at build time
+        def _envycontrol_current() -> int:
+            try:
+                r = subprocess.run(["envycontrol", "--query"],
+                                   capture_output=True, text=True, timeout=4)
+                out = r.stdout.strip().lower()
+                if "integrated" in out:   return 2
+                if "nvidia" in out:       return 1
+                return 0   # hybrid
+            except Exception: return 0
+
+        gpu_mode_opts = [
+            ("Hybrid  (iGPU + dGPU)", "hybrid"),
+            ("NVIDIA  (Discrete only)", "nvidia"),
+            ("Integrated  (iGPU only)", "integrated"),
+        ]
+        _cur_gpu_idx = _envycontrol_current()
+        self.gpu_mode_combo = QComboBox()
+        self.gpu_mode_combo.setStyleSheet(combo_style())
+        self.gpu_mode_combo.setFixedHeight(34)
+        for label, _ in gpu_mode_opts:
+            self.gpu_mode_combo.addItem(label)
+        self.gpu_mode_combo.setCurrentIndex(_cur_gpu_idx)
+        self.gpu_mode_combo.currentIndexChanged.connect(self._on_gpu_mode_combo)
+        gl.addWidget(_setting_row("🎮", "GPU Working Mode",
+            "Switches GPU mode via envycontrol. Requires reboot to take effect.", self.gpu_mode_combo))
+        gl.addWidget(make_div())
+
+        # G-Sync Toggle — via ToggleSwitch
+        _gsync_tog = ToggleSwitch(path=GSYNC, read_val=rdsys(GSYNC,"0"))
+        gl.addWidget(_setting_row("🔄", "G-Sync",
+            "NVIDIA G-Sync variable refresh rate. Enable for smoother gaming.", _gsync_tog))
+        gl.addWidget(make_div())
+
+        # Display Overdrive toggle
+        od_tog = ToggleSwitch(path=OVERDRIVE, read_val=rdsys(OVERDRIVE,"0"))
+        gl.addWidget(_setting_row("🖥️", "Display Overdrive",
+            "Reduce display response time latency.", od_tog))
+        gl.addWidget(make_div())
+
+        # Overclock GPU row — button to navigate to OC page
+        oc_btn = QPushButton("Open OC →")
+        oc_btn.setFixedSize(110, 34)
+        oc_btn.setStyleSheet(
+            f"background:{C_CARD2};color:{C_TEXT};border:1px solid {C_BORDER};"
+            f"border-radius:6px;font-size:12px;")
+        oc_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        oc_btn.clicked.connect(lambda: self._request_page(6))
+        gl.addWidget(_setting_row("🚀", "Overclock GPU",
+            "Increase performance by overclocking the discrete GPU.", oc_btn))
+
+        two_col.addWidget(gw, 1)
+        root.addLayout(two_col)
+
+        # ── System Status badges ──────────────────────────────────────────────
+        ss = QWidget(); ss.setStyleSheet(f"background:{C_CARD};border-radius:8px;")
+        ss.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum)
+        ssl = QVBoxLayout(ss); ssl.setContentsMargins(16,12,16,12); ssl.setSpacing(8)
+        ss_title = QLabel("System Status")
+        ss_title.setStyleSheet(f"color:{C_TEXT};font-size:13px;font-weight:600;background:transparent;")
+        ssl.addWidget(ss_title)
+        badge_row = QHBoxLayout(); badge_row.setSpacing(6)
+        self.b_boost  = StatusBadge("CPU Boost","—",C_TEXT3,"AMD Boost: allows CPU to burst above base clock")
+        self.b_gov    = StatusBadge("Governor","—",C_BLUE,"CPU frequency scaling governor")
+        self.b_epp    = StatusBadge("EPP","—",C_ORANGE,"Energy Performance Preference")
+        self.b_ac     = StatusBadge("Power","—",C_GREEN,"Current power source")
+        self.b_pstate = StatusBadge("GPU P-State","—",C_BLUE,"P0=Max Performance  P2=Mid  P8=Idle")
+        for b in [self.b_boost,self.b_gov,self.b_epp,self.b_ac,self.b_pstate]:
+            badge_row.addWidget(b)
+        ssl.addLayout(badge_row)
+        root.addWidget(ss)
+        root.addStretch()
+        self._page_request_cb = None
+        self._sync_battery_cb = None   # set by LegionDashboard to sync Battery page
+
+    def _request_page(self, idx):
+        if self._page_request_cb:
+            self._page_request_cb(idx)
+
+    def _on_power_combo(self, idx):
+        """Power Mode dropdown changed — read sysfs name from item UserRole data."""
+        p = self.power_combo.currentData()
+        if not p:  # fallback by position
+            p = PROFILES[idx] if idx < len(PROFILES) else PROFILES[0]
+        ok, msg = apply_profile(p)
+        send_notif(f"Power Mode: {PROFILE_LABELS.get(p,p)}",
+                   msg if not ok else PROFILE_DESCS.get(p,""), "battery" if ok else "dialog-error")
+
+    def _on_bat_combo(self, idx):
+        """Battery Mode: 0=Normal 1=Conservation 2=Rapid"""
+        if idx == 0:
+            wrsys(CONSERVATION_MODE, "0"); wrsys(RAPID_CHARGE, "0")
+            send_notif("Battery Mode", "Normal charging", "battery")
+            mode = "normal"
+        elif idx == 1:
+            wrsys(CONSERVATION_MODE, "1"); wrsys(RAPID_CHARGE, "0")
+            send_notif("Battery Mode", "Conservation — capped at ~60%", "battery")
+            mode = "conservation"
+        elif idx == 2:
+            wrsys(RAPID_CHARGE, "1"); wrsys(CONSERVATION_MODE, "0")
+            send_notif("Battery Mode", "Rapid Charge ON", "battery")
+            mode = "rapid"
+        else:
+            return
+        # Sync Battery page toggles if callback is set
+        if self._sync_battery_cb:
+            self._sync_battery_cb(mode)
+
+    def _on_gpu_mode_combo(self, idx):
+        """Apply GPU mode via envycontrol then notify user to reboot."""
+        modes  = ["hybrid", "nvidia", "integrated"]
+        labels = ["Hybrid (iGPU + dGPU)", "NVIDIA (Discrete only)", "Integrated (iGPU only)"]
+        descs  = [
+            "AMD iGPU renders, NVIDIA handles 3D workloads.",
+            "NVIDIA GPU drives everything — reboot required.",
+            "AMD iGPU only, NVIDIA powered off — reboot required.",
+        ]
+        mode = modes[idx]
+
+        def _do():
+            try:
+                import socket as _sk
+                c = _sk.socket(_sk.AF_UNIX, _sk.SOCK_STREAM)
+                c.settimeout(35)
+                c.connect("/run/legion-toolkit.sock")
+                c.send(f"envycontrol:{mode}\n".encode())
+                resp = c.recv(256).decode().strip()
+                c.close()
+                if resp == "ok":
+                    send_notif(
+                        f"GPU Mode → {labels[idx]}",
+                        f"{descs[idx]}\n\n⚠  Reboot to apply.",
+                        "display"
+                    )
+                elif "not found" in resp:
+                    send_notif("envycontrol not found",
+                        "Install it: yay -S envycontrol\nthen run: sudo bash update.sh",
+                        "dialog-error")
+                else:
+                    send_notif("GPU Mode — Error",
+                        resp.replace("err:","").strip() or "envycontrol failed",
+                        "dialog-error")
+            except ConnectionRefusedError:
+                # Daemon not running — try envycontrol directly via pkexec
+                try:
+                    import shutil
+                    env_bin = shutil.which("envycontrol")
+                    if env_bin:
+                        r = subprocess.run(
+                            ["pkexec", env_bin, "--switch", mode],
+                            capture_output=True, text=True, timeout=30
+                        )
+                        if r.returncode == 0:
+                            send_notif(f"GPU Mode → {labels[idx]}",
+                                f"{descs[idx]}\n\n⚠  Reboot to apply.", "display")
+                        else:
+                            send_notif("GPU Mode — Error",
+                                (r.stderr or r.stdout or "failed").strip()[:120],
+                                "dialog-error")
+                    else:
+                        send_notif("Daemon not running",
+                            "Start it: sudo systemctl start legion-toolkit",
+                            "dialog-error")
+                except Exception as e2:
+                    send_notif("GPU Mode — Error", str(e2)[:100], "dialog-error")
+            except Exception as e:
+                send_notif("GPU Mode — Error", str(e)[:100], "dialog-error")
+
+        threading.Thread(target=_do, daemon=True).start()
+
+    def _on_profile(self, profile):
+        """Kept for compat — not used in new layout."""
+        apply_profile(profile)
+
+    def refresh(self, d=None):
+        if d is None: return
+        # CPU
+        self.r_util.update_value(f"{d['cpu_util']}%",  d["cpu_util"])
+        self.r_freq.update_value(f"{d['cpu_freq']} GHz", int(d["cpu_freq"]/4.4*100))
+        self.r_temp.update_value(f"{d['cpu_temp']} °C",  d["cpu_temp"])
+        ic = d.get("ic_temp", 0)
+        if ic > 0:
+            self.r_ic_temp.set_value(f"{ic} °C", ic, visible=True)
+            self.r_ic_temp.setToolTip("Integrated Controller temperature (LLL)")
+        else:
+            self.r_ic_temp.set_value("—", 0, visible=False)
+            self.r_ic_temp.setToolTip("IC temperature requires LLL driver")
+        self.r_fan1.update_value(f"{d['fan1']} RPM",  int(d["fan1"]/5000*100))
+        self.r_fan2.update_value(f"{d['fan2']} RPM",  int(d["fan2"]/5000*100))
+        # GPU
+        gpu = d["gpu"]
+        if gpu.get("available"):
+            self.gpu_na.hide()
+            gmem_pct = int(gpu["mem_used"]*100/max(gpu["mem_total"],1))
+            self.r_g_util.update_value(f"{gpu['util']}%",  gpu["util"], C_BLUE)
+            self.r_g_freq.update_value(f"{gpu['freq']} MHz",int(gpu["freq"]/2000*100),C_BLUE)
+            self.r_g_temp.update_value(f"{gpu['temp']} °C", gpu["temp"])
+            self.r_g_mem.update_value( f"{gpu['mem_used']}/{gpu['mem_total']} MB",gmem_pct,C_BLUE)
+            self.r_g_pow.update_value( f"{gpu['power']:.0f} W",int(gpu["power"]/150*100),C_ORANGE)
+            pst = gpu.get("pstate","—")
+            col = C_GREEN if pst=="P0" else C_BLUE if pst in ["P1","P2"] else C_TEXT3
+            self.gpu_pstate_lbl.setText(f"P-State: {pst}")
+            self.gpu_pstate_lbl.setStyleSheet(
+                f"color:{col};font-size:12px;background:transparent;"
+                f"border:1px solid {col};border-radius:4px;padding:2px 8px;"
+            )
+        else:
+            self.gpu_na.show()
+            for r in [self.r_g_util,self.r_g_freq,self.r_g_temp,self.r_g_mem,self.r_g_pow]:
+                r.update_value("—", 0)
+            self.gpu_pstate_lbl.setText("P-State: N/A")
+        # RAM & Battery
+        ru=d["ram_used"]; rt=d["ram_total"]; rpct=d["ram_pct"]
+        pct=d["bat_pct"]; status=d["bat_status"]
+        self.r_ram.update_value(f"{ru} MB / {rt} MB", rpct)
+        bat_col = C_GREEN if pct>50 else C_ORANGE if pct>20 else C_RED
+        self.r_bat.update_value(f"{pct}%", pct, bat_col)
+        self.r_bstat.update_value(status, 0)
+        self.r_bpow.update_value(d["bat_power"], 0)
+        # Profile — sync dropdown by matching stored UserRole data (sysfs name)
+        cur = d["profile"]
+        self.power_combo.blockSignals(True)
+        for i in range(self.power_combo.count()):
+            if self.power_combo.itemData(i, Qt.ItemDataRole.UserRole) == cur:
+                self.power_combo.setCurrentIndex(i)
+                break
+        self.power_combo.blockSignals(False)
+        # Badges
+        boost = d["boost"]
+        self.b_boost.set_value("ON" if boost=="1" else "OFF",
+                               C_GREEN if boost=="1" else C_TEXT3)
+        self.b_gov.set_value(d["gov"].capitalize(), C_BLUE)
+        # EPP: shorten for display, full name in tooltip
+        epp_raw = d["epp"]
+        EPP_SHORT = {"default":"Default","performance":"Perf","balance_performance":"Bal.Perf",
+                     "balance_power":"Bal.Power","power":"PowerSave"}
+        self.b_epp.set_value(EPP_SHORT.get(epp_raw, epp_raw[:10]), C_ORANGE)
+        self.b_epp.setToolTip(f"EPP: {epp_raw.replace('_',' ').title()}")
+        self.b_ac.set_value("AC" if d["ac"] else "Battery",
+                            C_GREEN if d["ac"] else C_ORANGE)
+        pst2 = gpu.get("pstate","—") if gpu.get("available") else "—"
+        self.b_pstate.set_value(pst2,
+                                C_GREEN if pst2=="P0" else C_BLUE if pst2 in ["P1","P2"] else C_TEXT3)
+
 # ══════════════════════════════════════════════════════════════════════════════
 # BATTERY PAGE
 # ══════════════════════════════════════════════════════════════════════════════
 class BatteryPage(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
-        layout = QVBoxLayout(self)
-        lbl = QLabel("BatteryPage")
-        lbl.setStyleSheet("color:#888;font-size:16px;")
-        lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        layout.addWidget(lbl)
+        self.setStyleSheet(f"background:{C_BG};")
+        self._sync_home_cb = None   # set by LegionDashboard to sync Home combo
+        self._build()
+
+    def _build(self):
+        scroll = QScrollArea(self); scroll.setWidgetResizable(True)
+        scroll.setStyleSheet("border:none;background:transparent;")
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        inner = QWidget(); inner.setStyleSheet(f"background:{C_BG};")
+        root = QVBoxLayout(inner); root.setContentsMargins(24,24,24,24); root.setSpacing(12)
+        lay = QVBoxLayout(self); lay.setContentsMargins(0,0,0,0); lay.addWidget(scroll)
+        scroll.setWidget(inner)
+
+        sc, sl = make_card()
+        top = QHBoxLayout(); top.setSpacing(24)
+        left = QVBoxLayout(); left.setSpacing(4)
+        self.pct_lbl    = QLabel("—%")
+        self.pct_lbl.setStyleSheet(f"color:{C_TEXT};font-size:42px;font-weight:700;background:transparent;")
+        self.status_lbl = QLabel("Status: —")
+        self.status_lbl.setStyleSheet(f"color:{C_TEXT2};font-size:12px;font-weight:500;background:transparent;")
+        self.health_lbl = QLabel("Health: —")
+        self.health_lbl.setStyleSheet(f"color:{C_TEXT2};font-size:12px;font-weight:500;background:transparent;")
+        left.addWidget(self.pct_lbl); left.addWidget(self.status_lbl)
+        left.addWidget(self.health_lbl); left.addStretch()
+        top.addLayout(left)
+        vd = QWidget(); vd.setFixedWidth(12); vd.setStyleSheet("background:transparent;"); top.addWidget(vd)
+        right = QVBoxLayout(); right.setSpacing(4)
+        self.b_charge = StatRow("Charge",  "—", 0, 130, 110, C_GREEN)
+        self.b_health = StatRow("Health",  "—", 0, 130)
+        self.b_temp   = StatRow("Temp",    "—", 0, 130)
+        self.b_power  = StatRow("Draw",    "—", 0, 130)
+        for b in [self.b_charge,self.b_health,self.b_temp,self.b_power]:
+            right.addWidget(b)
+        right.addStretch(); top.addLayout(right)
+        sl.addLayout(top); root.addWidget(sc)
+
+        ds, dl = make_card("Battery Details")
+        self.info_rows = {}
+        for key, label in [("capacity","Capacity"),("voltage","Voltage"),
+                            ("cycles","Charge Cycles"),("power","Power Draw"),
+                            ("temp","Temperature"),("manufacturer","Manufacturer"),
+                            ("model","Model"),("technology","Technology")]:
+            r = InfoRow(label,"—"); self.info_rows[key] = r; dl.addWidget(r)
+        root.addWidget(ds)
+
+        cc, cl = make_card("Charging Settings")
+        # Normal charging toggle — ON = conservation OFF AND rapid OFF
+        _is_normal = (rdsys(CONSERVATION_MODE,"0") == "0" and
+                      rdsys(RAPID_CHARGE,"0") == "0")
+        self._normal_toggle = ToggleSwitch(
+            path=None,
+            on_change=self._on_normal_toggle,
+            read_val="1" if _is_normal else "0"
+        )
+        norm_row = QWidget(); norm_row.setStyleSheet("background:transparent;"); norm_row.setFixedHeight(56)
+        nrl = QHBoxLayout(norm_row); nrl.setContentsMargins(0,0,0,0); nrl.setSpacing(0)
+        ncol = QVBoxLayout(); ncol.setSpacing(2)
+        nt_lbl = QLabel("Normal Charging"); nt_lbl.setStyleSheet(f"color:{C_TEXT};font-size:13px;font-weight:600;background:transparent;")
+        nd_lbl = QLabel("Standard mode — both conservation and rapid charge OFF.")
+        nd_lbl.setStyleSheet(f"color:{C_TEXT2};font-size:12px;background:transparent;")
+        ncol.addWidget(nt_lbl); ncol.addWidget(nd_lbl)
+        nrl.addLayout(ncol); nrl.addStretch()
+        nrl.addWidget(self._normal_toggle, alignment=Qt.AlignmentFlag.AlignVCenter)
+        cl.addWidget(norm_row)
+        cl.addWidget(make_div())
+
+        rows = [
+            ("Conservation Mode",
+             "Limits charge to ~60% to extend battery lifespan.",
+             CONSERVATION_MODE, "conservation"),
+            ("Rapid Charging",
+             "Charges faster, generates more heat.",
+             RAPID_CHARGE, "rapid"),
+            ("USB Charging (off)",
+             "Keep USB ports powered when laptop is off/sleeping.",
+             USB_CHARGING, "usb"),
+            ("Power Charge Mode",
+             "Optimised charging curve for battery longevity.",
+             POWER_CHARGE_MODE, "pcm"),
+        ]
+        self.charge_toggles = {}
+        for i, (title, desc, path, key) in enumerate(rows):
+            # Build on_change callback that syncs the Home combo
+            def _make_cb(k):
+                def _cb(val):
+                    if k == "conservation" and val:
+                        wrsys(RAPID_CHARGE, "0")
+                        if "rapid" in self.charge_toggles:
+                            self.charge_toggles["rapid"].setChecked(False, write=False, silent=True)
+                        self._normal_toggle.setChecked(False, write=False, silent=True)
+                        if self._sync_home_cb: self._sync_home_cb(1)
+                    elif k == "rapid" and val:
+                        wrsys(CONSERVATION_MODE, "0")
+                        if "conservation" in self.charge_toggles:
+                            self.charge_toggles["conservation"].setChecked(False, write=False, silent=True)
+                        self._normal_toggle.setChecked(False, write=False, silent=True)
+                        if self._sync_home_cb: self._sync_home_cb(2)
+                    elif not val:
+                        # Turned off — check if both now off → Normal
+                        cons  = rdsys(CONSERVATION_MODE, "0")
+                        rapid = rdsys(RAPID_CHARGE, "0")
+                        if cons == "0" and rapid == "0":
+                            self._normal_toggle.setChecked(True, write=False, silent=True)
+                            if self._sync_home_cb: self._sync_home_cb(0)
+                return _cb
+
+            nt = NotifyToggle(title, desc, path,
+                              notif_title=title,
+                              notif_on="Enabled",
+                              notif_off="Disabled",
+                              on_change=_make_cb(key) if key in ("conservation","rapid") else None)
+            self.charge_toggles[key] = nt.toggle
+            cl.addWidget(nt)
+            if i < len(rows)-1: cl.addWidget(make_div())
+        root.addWidget(cc)
+
+        # ── ThinkPad charge thresholds (only shown on ThinkPads) ──────────────
+        if HW.get("tp_charge_start") and HW.get("tp_charge_stop"):
+            tc, tl = make_card("⚡  ThinkPad Charge Thresholds")
+            tp_desc = QLabel(
+                "Set custom start/stop charge levels to preserve long-term battery health.\n"
+                "Example: Start=40%, Stop=80% avoids full cycles.")
+            tp_desc.setWordWrap(True)
+            tp_desc.setStyleSheet(f"color:{C_TEXT2};font-size:12px;background:transparent;")
+            tl.addWidget(tp_desc)
+            tl.addWidget(make_div())
+
+            def _tp_spin(lo, hi, val, label_text):
+                row = QHBoxLayout(); row.setSpacing(12)
+                lbl = QLabel(label_text); lbl.setFixedWidth(130)
+                lbl.setStyleSheet(f"color:{C_TEXT};font-size:12px;background:transparent;")
+                sp = QSpinBox(); sp.setRange(lo, hi); sp.setValue(val); sp.setSuffix(" %")
+                sp.setStyleSheet(
+                    f"QSpinBox{{background:{C_CARD2};color:{C_TEXT};border:1px solid {C_BORDER};"
+                    f"border-radius:6px;padding:6px;font-size:12px;min-width:90px;}}"
+                    f"QSpinBox::up-button,QSpinBox::down-button{{width:20px;background:{C_CARD2};}}"
+                )
+                row.addWidget(lbl); row.addWidget(sp); row.addStretch()
+                return row, sp
+
+            try:
+                cur_start = int(Path("/sys/class/power_supply/BAT0/charge_start_threshold").read_text().strip())
+                cur_stop  = int(Path("/sys/class/power_supply/BAT0/charge_stop_threshold").read_text().strip())
+            except:
+                cur_start, cur_stop = 40, 80
+
+            start_row, self._tp_start = _tp_spin(0, 99, cur_start, "Start charging at:")
+            stop_row,  self._tp_stop  = _tp_spin(1, 100, cur_stop,  "Stop charging at:")
+            tl.addLayout(start_row); tl.addLayout(stop_row)
+
+            tp_apply = QPushButton("Apply Thresholds")
+            tp_apply.setFixedHeight(32)
+            tp_apply.setStyleSheet(
+                f"background:{C_ACCENT};color:#fff;border:none;"
+                f"border-radius:6px;font-size:12px;padding:0 16px;")
+            tp_apply.setCursor(Qt.CursorShape.PointingHandCursor)
+            tp_apply.clicked.connect(self._apply_tp_thresholds)
+            self._tp_status = QLabel("")
+            self._tp_status.setStyleSheet(f"color:{C_GREEN};font-size:12px;background:transparent;")
+            tp_btn_row = QHBoxLayout()
+            tp_btn_row.addWidget(tp_apply); tp_btn_row.addWidget(self._tp_status); tp_btn_row.addStretch()
+            tl.addLayout(tp_btn_row)
+            root.addWidget(tc)
+
+        root.addStretch()
+
+    def sync_charging(self, mode: str):
+        """Called from HomePage combo — updates toggles silently (no callbacks, no sysfs writes)."""
+        self._normal_toggle.setChecked(mode == "normal",       write=False, silent=True)
+        if "conservation" in self.charge_toggles:
+            self.charge_toggles["conservation"].setChecked(mode == "conservation", write=False, silent=True)
+        if "rapid" in self.charge_toggles:
+            self.charge_toggles["rapid"].setChecked(mode == "rapid",        write=False, silent=True)
+
+    def _apply_tp_thresholds(self):
+        start = self._tp_start.value()
+        stop  = self._tp_stop.value()
+        if start >= stop:
+            self._tp_status.setStyleSheet(f"color:{C_ORANGE};font-size:12px;background:transparent;")
+            self._tp_status.setText("✗  Start must be less than Stop")
+            return
+        def _do():
+            cmds = (
+                f"echo {start} > /sys/class/power_supply/BAT0/charge_start_threshold && "
+                f"echo {stop}  > /sys/class/power_supply/BAT0/charge_stop_threshold"
+            )
+            r = subprocess.run(["pkexec","sh","-c",cmds],
+                               capture_output=True, text=True, timeout=8)
+            if r.returncode == 0:
+                self._tp_status.setStyleSheet(f"color:{C_GREEN};font-size:12px;background:transparent;")
+                self._tp_status.setText(f"✓  Start {start}%  Stop {stop}%")
+                send_notif("Charge Thresholds", f"Start {start}%  →  Stop {stop}%", "battery")
+            else:
+                self._tp_status.setStyleSheet(f"color:{C_ORANGE};font-size:12px;background:transparent;")
+                self._tp_status.setText(f"✗  {r.stderr.strip()[:80]}")
+        threading.Thread(target=_do, daemon=True).start()
+
+    def _on_normal_toggle(self, val):
+        if val:
+            wrsys(CONSERVATION_MODE, "0")
+            wrsys(RAPID_CHARGE, "0")
+            if "conservation" in self.charge_toggles:
+                self.charge_toggles["conservation"].setChecked(False, write=False, silent=True)
+            if "rapid" in self.charge_toggles:
+                self.charge_toggles["rapid"].setChecked(False, write=False, silent=True)
+            send_notif("Charging Mode", "Normal charging — no limits", "battery")
+            if self._sync_home_cb: self._sync_home_cb(0)
+
+    def refresh(self, d=None):
+        s = get_battery_stats()
+        pct    = s["percent"]
+        health = s["health"]
+        bat_col    = C_GREEN if pct > 50 else C_ORANGE if pct > 20 else C_RED
+        health_col = C_GREEN if health > 80 else C_ORANGE if health > 60 else C_RED
+        self.pct_lbl.setText(f"{pct}%")
+        self.pct_lbl.setStyleSheet(f"color:{bat_col};font-size:40px;font-weight:600;background:transparent;")
+        self.status_lbl.setText(f"Status: {s['status']}")
+        self.health_lbl.setText(f"Health: {health}%")
+        self.b_charge.update_value(f"{pct}%",    pct,    bat_col)
+        self.b_health.update_value(f"{health}%", health, health_col)
+        self.b_temp.update_value(s["temp"],  0)
+        self.b_power.update_value(s["power"], 0)
+        for k in self.info_rows:
+            self.info_rows[k].set_value(str(s.get(k, "—")))
+
 # ══════════════════════════════════════════════════════════════════════════════
 # PERFORMANCE PAGE
 # ══════════════════════════════════════════════════════════════════════════════
